@@ -1,0 +1,23 @@
+# Datasets
+data/
+**/training_set/
+**/supplementary_set/
+**/*.edf
+
+# Artifacts
+model/
+model_smoke/
+model_full_smoke/
+outputs/
+outputs_smoke/
+__pycache__/
+*.pyc
+*.pkl
+*.sav
+*.joblib
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
