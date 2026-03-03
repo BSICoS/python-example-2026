@@ -19,8 +19,8 @@ Esto generará: `data/training_smoke/`
 ## Entrenar con el smoke dataset
 
 ```powershell
-$DATA="data/training_smoke"
-$MODEL="$PWD/model_smoke"
+$DATA="$PWD\data\training_smoke"
+$MODEL="$PWD\model_smoke"
 
 docker run --rm `
   -v "${DATA}:/challenge/training_data:ro" `
