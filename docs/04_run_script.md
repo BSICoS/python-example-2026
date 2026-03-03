@@ -1,124 +1,179 @@
 # Script unificado de ejecución (`run.ps1`)
 
-Para simplificar el trabajo del equipo hemos creado un único script que encapsula todos los comandos necesarios para:
+Este script centraliza todos los comandos necesarios para trabajar en el proyecto:
 
-- Construir la imagen Docker
-- Crear el dataset smoke
-- Entrenar (completo o smoke)
-- Generar predicciones
-- Limpiar artefactos
+- Construir la imagen Docker  
+- Crear el dataset smoke  
+- Entrenar (modo desarrollo o completo)  
+- Generar predicciones  
+- Limpiar artefactos  
 
 ---
 
-## Requisitos
+# Requisitos
 
-- Docker Desktop instalado
-- Dataset descargado en: `data/training_set/`
+- Docker Desktop instalado  
+- Dataset descargado en:
 
+```
+data/training_set/
+```
 
-⚠️ Si el dataset está en otra ubicación, modificar la variable `$FULL_DATA` dentro de `run.ps1`.
+⚠️ Si el dataset está en otra ubicación, modificar la variable `$FULL_DATA_REL`
+dentro de `run.ps1`.
 
 ---
 
 # Comandos disponibles
 
-Nota: Si PowerShell bloquea la ejecución, ejecutar primero:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
 Desde la raíz del repositorio:
+
+---
 
 ## 1️⃣ Construir la imagen Docker
 
 ```powershell
-.\scripts\run.ps1 build
+.\run.ps1 build
 ```
 
 Solo es necesario hacerlo:
 
-- La primera vez
-- Cuando cambien dependencias o el Dockerfile
+- La primera vez  
+- Cuando cambien `requirements.txt`  
+- Cuando cambie el `Dockerfile`  
+
+No es necesario al modificar `team_code.py` en modo desarrollo.
+
+---
 
 ## 2️⃣ Crear dataset smoke (5 sujetos)
 
 ```powershell
-.\scripts\run.ps1 smoke
+.\run.ps1 smoke
 ```
 
-Genera: `data/training_smoke/`
+Genera:
 
-Este dataset se usa para desarrollo rápido.
-
-## 3️⃣ Entrenar modelo
-
-### Smoke (rápido)
-
-```powershell
-.\scripts\run.ps1 train-smoke
+```
+data/training_smoke/
 ```
 
+Este dataset se utiliza exclusivamente para desarrollo rápido.
 
-### Completo
+---
+
+# 🚀 Modo desarrollo (rápido)
+
+Estos comandos:
+
+- Usan el dataset smoke  
+- Montan el código como volumen  
+- No requieren rebuild al modificar Python  
+
+---
+
+## 3️⃣ Entrenar en modo desarrollo
 
 ```powershell
-.\scripts\run.ps1 train
+.\run.ps1 train-dev
 ```
 
-El modelo se guarda en:
+Utiliza:
 
-- model/          (full)
-- model_smoke/    (smoke)
+- `data/training_smoke`  
+- `model_smoke/`  
 
-## 4️⃣ Generar predicciones
+---
 
-### Smoke
+## 4️⃣ Generar predicciones en modo desarrollo
 
 ```powershell
-.\scripts\run.ps1 run-smoke
+.\run.ps1 run-dev
 ```
 
-### Completo
+Genera resultados en:
 
-```powershell
-.\scripts\run.ps1 run
+```
+outputs_smoke/
 ```
 
-Los resultados se generan en:
+---
 
-- outputs/
-- outputs_smoke/
-
-El archivo clave es: `demographics.csv` que contiene las predicciones añadidas.
-
-## 5️⃣ Limpiar artefactos
+## 🔁 Flujo recomendado de desarrollo
 
 ```powershell
-.\scripts\run.ps1 clean
+.\run.ps1 build        # solo la primera vez
+.\run.ps1 smoke        # solo si no existe
+.\run.ps1 train-dev
+.\run.ps1 run-dev
+```
+
+Este flujo debe usarse para:
+
+- Probar nuevas features  
+- Ajustar el modelo  
+- Depurar errores  
+- Iterar rápidamente  
+
+---
+
+# 🧪 Entrenamiento completo
+
+Solo cuando el modelo esté estable.
+
+---
+
+## 5️⃣ Entrenar con dataset completo
+
+```powershell
+.\run.ps1 train
+```
+
+Guarda el modelo en:
+
+```
+model/
+```
+
+---
+
+## 6️⃣ Generar predicciones completas
+
+```powershell
+.\run.ps1 run
+```
+
+Genera resultados en:
+
+```
+outputs/
+```
+
+---
+
+# 🧹 Limpiar artefactos
+
+```powershell
+.\run.ps1 clean
 ```
 
 Elimina:
 
-- model/
-- model_smoke/
-- outputs/
-- outputs_smoke/
+- `model/`  
+- `model_smoke/`  
+- `outputs/`  
+- `outputs_smoke/`  
 
 No elimina datasets.
 
-# Flujo recomendado para desarrollo
+# Estrategia recomendada del equipo
 
-```powershell
-.\scripts\run.ps1 build
-.\scripts\run.ps1 smoke
-.\scripts\run.ps1 train-smoke
-.\scripts\run.ps1 run-smoke
-```
-
-Solo cuando el modelo esté estable:
-
-```powershell
-.\scripts\run.ps1 train
-.\scripts\run.ps1 run
-```
+1. Desarrollar siempre en modo `*-dev`.  
+2. Entrenar en full solo antes de:
+   - Hacer merge a `main`
+   - Generar submission  
+3. Antes de enviar al challenge:
+   - Ejecutar `build`
+   - Ejecutar `train`
+   - Ejecutar `run`
+   - Verificar que funciona sin modo dev  
