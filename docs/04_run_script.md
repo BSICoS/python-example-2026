@@ -22,6 +22,11 @@ data/training_set/
 ⚠️ Si el dataset está en otra ubicación, modificar la variable `$FULL_DATA_REL`
 dentro de `run.ps1`.
 
+⚠️ Si PowerShell bloquea la ejecución de scripts, ejecutar (aplica solo para la sesión actual):
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
 ---
 
 # Comandos disponibles
