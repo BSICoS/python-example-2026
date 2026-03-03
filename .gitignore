@@ -1,3 +1,29 @@
+# Dataset
+data/
+
+# Model artifacts
+model/
+model_smoke/
+*.pkl
+*.sav
+*.joblib
+
+# Outputs
+outputs/
+outputs_smoke/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -49,7 +75,6 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
-data/
 graphs/
 
 graphs
