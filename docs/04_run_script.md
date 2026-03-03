@@ -1,12 +1,7 @@
-# Script unificado de ejecución (`run.ps1`)
+# Script unificado de ejecución (`run.sh`)
 
-Este script centraliza todos los comandos necesarios para trabajar en el proyecto:
-
-- Construir la imagen Docker  
-- Crear el dataset smoke  
-- Entrenar (modo desarrollo o completo)  
-- Generar predicciones  
-- Limpiar artefactos  
+Este documento es la guía operativa única para ejecutar el proyecto.
+Aquí se define el orden recomendado y los comandos asociados.
 
 ---
 
@@ -20,165 +15,87 @@ data/training_set/
 ```
 
 ⚠️ Si el dataset está en otra ubicación, modificar la variable `$FULL_DATA_REL`
-dentro de `run.ps1`.
+dentro de `run.sh`.
 
-⚠️ Si PowerShell bloquea la ejecución de scripts, ejecutar (aplica solo para la sesión actual):
+⚠️ Ejecutar los comandos desde Git Bash.
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
+ℹ️ Existen scripts equivalentes en PowerShell (`run.ps1` y `scripts/create_smoke.ps1`) para quienes prefieran ese entorno.
+
+ℹ️ Para contexto general y definición de artefactos, ver `docs/02_docker.md` y `docs/03_smoke_dataset.md`.
 ---
 
-# Comandos disponibles
+# Orden de ejecución recomendado
 
-Desde la raíz del repositorio:
+Desde la raíz del repositorio.
 
----
+## 1) Preparar entorno
 
-## 1️⃣ Construir la imagen Docker
+### Construir imagen Docker
 
-```powershell
-.\run.ps1 build
+```bash
+./run.sh build
 ```
 
-Solo es necesario hacerlo:
+Ejecutar la primera vez y cada vez que cambien `requirements.txt` o `Dockerfile`.
 
-- La primera vez  
-- Cuando cambien `requirements.txt`  
-- Cuando cambie el `Dockerfile`  
+### Crear dataset smoke (5 sujetos)
 
-No es necesario al modificar `team_code.py` en modo desarrollo.
-
----
-
-## 2️⃣ Crear dataset smoke (5 sujetos)
-
-```powershell
-.\run.ps1 smoke
+```bash
+./run.sh smoke
 ```
 
-Genera:
+Genera `data/training_smoke/`.
 
-```
-data/training_smoke/
-```
+## 2) Ciclo en modo desarrollo (smoke)
 
-Este dataset se utiliza exclusivamente para desarrollo rápido.
+### Entrenar en modo desarrollo (smoke)
 
----
-
-# 🚀 Modo desarrollo (rápido)
-
-Estos comandos:
-
-- Usan el dataset smoke  
-- Montan el código como volumen  
-- No requieren rebuild al modificar Python  
-
----
-
-## 3️⃣ Entrenar en modo desarrollo
-
-```powershell
-.\run.ps1 train-dev
+```bash
+./run.sh train-dev
 ```
 
-Utiliza:
+Usa `data/training_smoke/` y guarda modelo en `model_smoke/`.
 
-- `data/training_smoke`  
-- `model_smoke/`  
+### Generar predicciones (inferencia) en modo desarrollo (smoke)
 
----
-
-## 4️⃣ Generar predicciones en modo desarrollo
-
-```powershell
-.\run.ps1 run-dev
+```bash
+./run.sh run-dev
 ```
 
-Genera resultados en:
+Genera resultados en `outputs_smoke/`.
 
-```
-outputs_smoke/
-```
+### Secuencia típica en modo desarrollo (smoke)
 
----
-
-## 🔁 Flujo recomendado de desarrollo
-
-```powershell
-.\run.ps1 build        # solo la primera vez
-.\run.ps1 smoke        # solo si no existe
-.\run.ps1 train-dev
-.\run.ps1 run-dev
+```bash
+./run.sh build        # solo la primera vez
+./run.sh smoke        # solo si no existe
+./run.sh train-dev
+./run.sh run-dev
 ```
 
-Este flujo debe usarse para:
+## 3) Validación completa
 
-- Probar nuevas features  
-- Ajustar el modelo  
-- Depurar errores  
-- Iterar rápidamente  
+### Entrenar con dataset completo
 
----
-
-# 🧪 Entrenamiento completo
-
-Solo cuando el modelo esté estable.
-
----
-
-## 5️⃣ Entrenar con dataset completo
-
-```powershell
-.\run.ps1 train
+```bash
+./run.sh train
 ```
 
-Guarda el modelo en:
+Guarda el modelo en `model/`.
 
-```
-model/
-```
+### Generar predicciones (inferencia) completas
 
----
-
-## 6️⃣ Generar predicciones completas
-
-```powershell
-.\run.ps1 run
+```bash
+./run.sh run
 ```
 
-Genera resultados en:
+Genera resultados en `outputs/`.
 
-```
-outputs/
-```
+## 4) Limpieza de artefactos
 
----
-
-# 🧹 Limpiar artefactos
-
-```powershell
-.\run.ps1 clean
+```bash
+./run.sh clean
 ```
 
-Elimina:
-
-- `model/`  
-- `model_smoke/`  
-- `outputs/`  
-- `outputs_smoke/`  
-
+Elimina `model/`, `model_smoke/`, `outputs/` y `outputs_smoke/`.
 No elimina datasets.
-
-# Estrategia recomendada del equipo
-
-1. Desarrollar siempre en modo `*-dev`.  
-2. Entrenar en full solo antes de:
-   - Hacer merge a `main`
-   - Generar submission  
-3. Antes de enviar al challenge:
-   - Ejecutar `build`
-   - Ejecutar `train`
-   - Ejecutar `run`
-   - Verificar que funciona sin modo dev  

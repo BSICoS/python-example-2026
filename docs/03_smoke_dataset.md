@@ -1,51 +1,40 @@
-# Dataset Smoke (Desarrollo Rápido)
+# Dataset smoke (Modo desarrollo)
 
 Entrenar con el dataset completo tarda aproximadamente 30–40 minutos con el modelo de ejemplo.
 
 Para desarrollo utilizamos un dataset reducido (5 sujetos).
 
+Este documento describe cuándo y por qué usar smoke.
+Los comandos de ejecución están centralizados en `docs/04_run_script.md`.
+
 ---
 
-## Crear dataset smoke
+## Qué incluye
 
-Ejecutar:
+- Muestra reducida del dataset (5 sujetos)
+- Estructura compatible con el flujo oficial del proyecto
+- Directorio de salida en `data/training_smoke/`
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/create_smoke.ps1
-```
+## Para qué se usa
 
-Esto generará: `data/training_smoke/`
+- Validar cambios de código rápidamente
+- Detectar errores de integración antes del entrenamiento completo
+- Iterar en modo desarrollo (smoke) sin esperar ciclos largos
 
-## Entrenar con el smoke dataset
+## Artefactos asociados
 
-```powershell
-$DATA="$PWD\data\training_smoke"
-$MODEL="$PWD\model_smoke"
+- Entrenamiento smoke: `model_smoke/`
+- Predicciones (inferencia) smoke: `outputs_smoke/`
 
-docker run --rm `
-  -v "${DATA}:/challenge/training_data:ro" `
-  -v "${MODEL}:/challenge/model" `
-  cinc2026 `
-  python train_model.py -d training_data -m model -v
-```
+## Relación con el flujo principal
 
-## Generar predicciones con smoke dataset
-
-```powershell
-$OUT="$PWD/outputs_smoke"
-
-docker run --rm `
-  -v "${DATA}:/challenge/holdout_data:ro" `
-  -v "${MODEL}:/challenge/model:ro" `
-  -v "${OUT}:/challenge/holdout_outputs" `
-  cinc2026 `
-  python run_model.py -d holdout_data -m model -o holdout_outputs -v
-```
+El dataset smoke se crea al inicio del ciclo de desarrollo y se usa junto con `train-dev` y `run-dev`.
+El orden detallado de ejecución está en `docs/04_run_script.md`.
 
 ## ¿Cuándo usar smoke?
 
-- Desarrollo de nuevas features
+- Desarrollo de nuevas funcionalidades
 - Comprobación rápida de que el código no rompe
-- Validación de cambios en team_code.py
+- Validación de cambios en `team_code.py`
 
 Nunca usar smoke para evaluar rendimiento final.

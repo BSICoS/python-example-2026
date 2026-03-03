@@ -1,53 +1,46 @@
 # Uso de Docker
 
+Este documento define el contexto de ejecución con Docker.
+
 ## Requisitos
 
 - Docker Desktop instalado (modo Linux containers)
 - Dataset descargado desde Kaggle
-- Se asume que el dataset está en: data/training_set/
+- Dataset completo disponible en `data/training_set/` (ruta por defecto del proyecto)
 
-Cada miembro del equipo puede tener el dataset en una ubicación diferente, pero en este repositorio asumimos que está dentro de `data/`.
+Si tu dataset está en otra ubicación, actualiza la variable de ruta en el script de ejecución.
 
----
+## Estructura de trabajo
 
-## Construir la imagen
+Entradas:
 
-Desde la raíz del repositorio:
+- `data/training_set/` (dataset completo)
+- `data/training_smoke/` (dataset reducido para modo desarrollo (smoke))
 
-```powershell
-docker build -t cinc2026 .
-```
+Salidas:
 
-## Entenar con el dataset completo
+- `model/` y `outputs/` (flujo completo)
+- `model_smoke/` y `outputs_smoke/` (flujo smoke/desarrollo)
 
-```powershell
-$DATA="data/training_set"
-$MODEL="$PWD/model"
+## Orden recomendado de ejecución
 
-docker run --rm `
-  -v "${DATA}:/challenge/training_data:ro" `
-  -v "${MODEL}:/challenge/model" `
-  cinc2026 `
-  python train_model.py -d training_data -m model -v
-```
+1. Construir imagen Docker (`build`)
+2. Preparar dataset smoke (`smoke`)
+3. Iterar en modo desarrollo (smoke) (`train-dev` / `run-dev`)
+4. Ejecutar validación completa (`train` / `run`)
+5. Limpiar artefactos cuando corresponda (`clean`)
 
-## Generar predicciones
+La guía paso a paso está en `docs/04_run_script.md`.
 
-```powershell
-$OUT="$PWD/outputs"
+## Compatibilidad de scripts
 
-docker run --rm `
-  -v "${DATA}:/challenge/holdout_data:ro" `
-  -v "${MODEL}:/challenge/model:ro" `
-  -v "${OUT}:/challenge/holdout_outputs" `
-  cinc2026 `
-  python run_model.py -d holdout_data -m model -o holdout_outputs -v
-```
+El flujo principal del equipo está documentado con `run.sh` (Git Bash).
+También existen equivalentes en PowerShell: `run.ps1` y `scripts/create_smoke.ps1`.
 
 ## Resultado esperado
 
-En la carpeta `outputs/` se generará un `demographics.csv` con:
+Tras ejecutar la generación de predicciones (inferencia) completa, en `outputs/` se genera un `demographics.csv` con:
 
 - Columnas originales
-- Cognitive_Impairment
-- Cognitive_Impairment_Probability
+- `Cognitive_Impairment`
+- `Cognitive_Impairment_Probability`
