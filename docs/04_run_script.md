@@ -22,12 +22,18 @@ Para simplificar el trabajo del equipo hemos creado un único script que encapsu
 
 # Comandos disponibles
 
+Nota: Si PowerShell bloquea la ejecución, ejecutar primero:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
 Desde la raíz del repositorio:
 
 ## 1️⃣ Construir la imagen Docker
 
 ```powershell
-.\run.ps1 build
+.\scripts\run.ps1 build
 ```
 
 Solo es necesario hacerlo:
@@ -38,7 +44,7 @@ Solo es necesario hacerlo:
 ## 2️⃣ Crear dataset smoke (5 sujetos)
 
 ```powershell
-.\run.ps1 smoke
+.\scripts\run.ps1 smoke
 ```
 
 Genera: `data/training_smoke/`
@@ -50,14 +56,14 @@ Este dataset se usa para desarrollo rápido.
 ### Smoke (rápido)
 
 ```powershell
-.\run.ps1 train-smoke
+.\scripts\run.ps1 train-smoke
 ```
 
 
 ### Completo
 
 ```powershell
-.\run.ps1 train
+.\scripts\run.ps1 train
 ```
 
 El modelo se guarda en:
@@ -70,13 +76,13 @@ El modelo se guarda en:
 ### Smoke
 
 ```powershell
-.\run.ps1 run-smoke
+.\scripts\run.ps1 run-smoke
 ```
 
 ### Completo
 
 ```powershell
-.\run.ps1 run
+.\scripts\run.ps1 run
 ```
 
 Los resultados se generan en:
@@ -89,7 +95,7 @@ El archivo clave es: `demographics.csv` que contiene las predicciones añadidas.
 ## 5️⃣ Limpiar artefactos
 
 ```powershell
-.\run.ps1 clean
+.\scripts\run.ps1 clean
 ```
 
 Elimina:
@@ -104,15 +110,15 @@ No elimina datasets.
 # Flujo recomendado para desarrollo
 
 ```powershell
-.\run.ps1 build
-.\run.ps1 smoke
-.\run.ps1 train-smoke
-.\run.ps1 run-smoke
+.\scripts\run.ps1 build
+.\scripts\run.ps1 smoke
+.\scripts\run.ps1 train-smoke
+.\scripts\run.ps1 run-smoke
 ```
 
 Solo cuando el modelo esté estable:
 
 ```powershell
-.\run.ps1 train
-.\run.ps1 run
+.\scripts\run.ps1 train
+.\scripts\run.ps1 run
 ```
