@@ -7,8 +7,11 @@ param(
         "train-smoke",
         "run",
         "run-smoke",
+        "eval",
+        "eval-smoke",
         "train-dev",
         "run-dev",
+        "eval-dev",
         "clean"
     )]
     [string]$Command
@@ -33,6 +36,7 @@ $MODEL_SMOKE_REL = "model_smoke"
 
 $OUT_FULL_REL = "outputs"
 $OUT_SMOKE_REL = "outputs_smoke"
+$DEMOGRAPHICS_FILE = "demographics.csv"
 
 # ============================================
 # FUNCIONES AUXILIARES
@@ -46,6 +50,24 @@ function Ensure-Directory($path) {
     if (!(Test-Path $path)) {
         New-Item -ItemType Directory -Force -Path $path | Out-Null
     }
+}
+
+function Invoke-Evaluation($DataPath, $OutputPath, $Label) {
+    Write-Host "Evaluating $Label predictions..."
+    docker run --rm `
+        -v "${DataPath}:/challenge/eval_data:ro" `
+        -v "${OutputPath}:/challenge/eval_outputs:ro" `
+        $IMAGE_NAME `
+        python evaluate_model.py -d "/challenge/eval_data/$DEMOGRAPHICS_FILE" -o "/challenge/eval_outputs/$DEMOGRAPHICS_FILE"
+}
+
+function Invoke-EvaluationDev($CodePath, $DataPath, $OutputPath, $Label) {
+    Write-Host "Evaluating $Label predictions..."
+    docker run --rm `
+        -v "${CodePath}:/challenge" `
+        -v "${DataPath}:/challenge/eval_data:ro" `
+        $IMAGE_NAME `
+        python evaluate_model.py -d "/challenge/eval_data/$DEMOGRAPHICS_FILE" -o "$OutputPath/$DEMOGRAPHICS_FILE"
 }
 
 # ============================================
@@ -103,6 +125,8 @@ function Run-Full {
         -v "${OUT_FULL}:/challenge/holdout_outputs" `
         $IMAGE_NAME `
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
+
+    Invoke-Evaluation $FULL_DATA $OUT_FULL "full-dataset"
 }
 
 function Run-Smoke {
@@ -119,6 +143,24 @@ function Run-Smoke {
         -v "${OUT_SMOKE}:/challenge/holdout_outputs" `
         $IMAGE_NAME `
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
+
+    Invoke-Evaluation $SMOKE_DATA $OUT_SMOKE "smoke"
+}
+
+function Eval-Full {
+
+    $FULL_DATA = Get-AbsolutePath $FULL_DATA_REL
+    $OUT_FULL = Get-AbsolutePath $OUT_FULL_REL
+
+    Invoke-Evaluation $FULL_DATA $OUT_FULL "full-dataset"
+}
+
+function Eval-Smoke {
+
+    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
+    $OUT_SMOKE = Get-AbsolutePath $OUT_SMOKE_REL
+
+    Invoke-Evaluation $SMOKE_DATA $OUT_SMOKE "smoke"
 }
 
 # ======================
@@ -157,6 +199,16 @@ function Run-Dev {
         -v "${OUT_SMOKE}:/challenge/holdout_outputs" `
         $IMAGE_NAME `
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
+
+    Invoke-EvaluationDev $CODE_PATH $SMOKE_DATA "/challenge/holdout_outputs" "development smoke"
+}
+
+function Eval-Dev {
+
+    $CODE_PATH = Get-AbsolutePath "."
+    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
+
+    Invoke-EvaluationDev $CODE_PATH $SMOKE_DATA "/challenge/holdout_outputs" "development smoke"
 }
 
 function Clean-All {
@@ -181,8 +233,11 @@ switch ($Command) {
     "train-smoke" { Train-Smoke }
     "run"         { Run-Full }
     "run-smoke"   { Run-Smoke }
+    "eval"        { Eval-Full }
+    "eval-smoke"  { Eval-Smoke }
     "train-dev"   { Train-Dev }
     "run-dev"     { Run-Dev }
+    "eval-dev"    { Eval-Dev }
     "clean"       { Clean-All }
 
 }

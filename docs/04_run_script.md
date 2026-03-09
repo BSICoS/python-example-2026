@@ -62,7 +62,15 @@ Usa `data/training_smoke/` y guarda modelo en `model_smoke/`.
 ./run.sh run-dev
 ```
 
-Genera resultados en `outputs_smoke/`.
+Genera resultados en `outputs_smoke/` y luego imprime métricas de evaluación en consola.
+
+### Evaluar predicciones existentes en modo desarrollo (smoke)
+
+```bash
+./run.sh eval-dev
+```
+
+Reutiliza `outputs_smoke/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
 
 ### Secuencia típica en modo desarrollo (smoke)
 
@@ -71,6 +79,7 @@ Genera resultados en `outputs_smoke/`.
 ./run.sh smoke        # solo si no existe
 ./run.sh train-dev
 ./run.sh run-dev
+./run.sh eval-dev     # opcional: reevaluar sin correr inferencia
 ```
 
 ## 3) Validación completa
@@ -89,7 +98,23 @@ Guarda el modelo en `model/`.
 ./run.sh run
 ```
 
-Genera resultados en `outputs/`.
+Genera resultados en `outputs/` y luego imprime métricas de evaluación en consola.
+
+### Evaluar predicciones existentes completas
+
+```bash
+./run.sh eval
+```
+
+Reutiliza `outputs/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
+
+### Evaluar predicciones existentes del dataset smoke
+
+```bash
+./run.sh eval-smoke
+```
+
+Reutiliza `outputs_smoke/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
 
 ## 4) Limpieza de artefactos
 

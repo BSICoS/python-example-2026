@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 <build|smoke|train|train-smoke|run|run-smoke|train-dev|run-dev|clean>"
+    echo "Usage: $0 <build|smoke|train|train-smoke|run|run-smoke|eval|eval-smoke|train-dev|run-dev|eval-dev|clean>"
     exit 1
 fi
 
@@ -22,6 +22,7 @@ MODEL_SMOKE_REL="model_smoke"
 
 OUT_FULL_REL="outputs"
 OUT_SMOKE_REL="outputs_smoke"
+DEMOGRAPHICS_FILE="demographics.csv"
 
 # ============================================
 # HELPERS
@@ -49,6 +50,45 @@ to_docker_path() {
 
 docker_cli() {
     MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" docker "$@"
+}
+
+evaluate_predictions() {
+    local data_dir="$1"
+    local output_dir="$2"
+    local label="$3"
+    local data_dir_docker output_dir_docker
+
+    data_dir_docker="$(to_docker_path "$data_dir")"
+    output_dir_docker="$(to_docker_path "$output_dir")"
+
+    echo "Evaluating ${label} predictions..."
+    docker_cli run --rm \
+        -v "${data_dir_docker}:/challenge/eval_data:ro" \
+        -v "${output_dir_docker}:/challenge/eval_outputs:ro" \
+        "$IMAGE_NAME" \
+        python evaluate_model.py \
+            -d "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
+            -o "/challenge/eval_outputs/${DEMOGRAPHICS_FILE}"
+}
+
+evaluate_predictions_dev() {
+    local code_path="$1"
+    local data_path="$2"
+    local output_path="$3"
+    local label="$4"
+    local code_path_docker data_path_docker
+
+    code_path_docker="$(to_docker_path "$code_path")"
+    data_path_docker="$(to_docker_path "$data_path")"
+
+    echo "Evaluating ${label} predictions..."
+    docker_cli run --rm \
+        -v "${code_path_docker}:/challenge" \
+        -v "${data_path_docker}:/challenge/eval_data:ro" \
+        "$IMAGE_NAME" \
+        python evaluate_model.py \
+            -d "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
+            -o "$output_path/${DEMOGRAPHICS_FILE}"
 }
 
 build_image() {
@@ -115,6 +155,8 @@ run_full() {
         -v "${out_full_docker}:/challenge/holdout_outputs" \
         "$IMAGE_NAME" \
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
+
+    evaluate_predictions "$full_data" "$out_full" "full-dataset"
 }
 
 run_smoke() {
@@ -136,6 +178,26 @@ run_smoke() {
         -v "${out_smoke_docker}:/challenge/holdout_outputs" \
         "$IMAGE_NAME" \
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
+
+    evaluate_predictions "$smoke_data" "$out_smoke" "smoke"
+}
+
+eval_full() {
+    local full_data out_full
+
+    full_data="$(get_absolute_path "$FULL_DATA_REL")"
+    out_full="$(get_absolute_path "$OUT_FULL_REL")"
+
+    evaluate_predictions "$full_data" "$out_full" "full-dataset"
+}
+
+eval_smoke() {
+    local smoke_data out_smoke
+
+    smoke_data="$(get_absolute_path "$SMOKE_DATA_REL")"
+    out_smoke="$(get_absolute_path "$OUT_SMOKE_REL")"
+
+    evaluate_predictions "$smoke_data" "$out_smoke" "smoke"
 }
 
 # =====================
@@ -178,6 +240,17 @@ run_dev() {
         -v "${smoke_data_docker}:/challenge/data_smoke:ro" \
         "$IMAGE_NAME" \
         python run_model.py -d /challenge/data_smoke -m /challenge/model_smoke -o /challenge/outputs_smoke -v
+
+    evaluate_predictions_dev "$code_path" "$smoke_data" "/challenge/outputs_smoke" "development smoke"
+}
+
+eval_dev() {
+    local code_path smoke_data
+
+    code_path="$(get_absolute_path ".")"
+    smoke_data="$(get_absolute_path "$SMOKE_DATA_REL")"
+
+    evaluate_predictions_dev "$code_path" "$smoke_data" "/challenge/outputs_smoke" "development smoke"
 }
 
 clean_all() {
@@ -192,12 +265,15 @@ case "$COMMAND" in
     train-smoke) train_smoke ;;
     run)         run_full ;;
     run-smoke)   run_smoke ;;
+    eval)        eval_full ;;
+    eval-smoke)  eval_smoke ;;
     train-dev)   train_dev ;;
     run-dev)     run_dev ;;
+    eval-dev)    eval_dev ;;
     clean)       clean_all ;;
     *)
         echo "Invalid command: $COMMAND"
-        echo "Valid commands: build, smoke, train, train-smoke, run, run-smoke, train-dev, run-dev, clean"
+        echo "Valid commands: build, smoke, train, train-smoke, run, run-smoke, eval, eval-smoke, train-dev, run-dev, eval-dev, clean"
         exit 1
         ;;
 esac
