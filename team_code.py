@@ -130,6 +130,7 @@ def train_model(data_folder, model_folder, verbose, csv_path=DEFAULT_CSV_PATH):
                 continue # skip record
             physiological_data, physiological_fs = load_signal_data(physiological_data_file)
             physiological_features = extract_physiological_features(physiological_data, physiological_fs, csv_path=csv_path) # This function can rename, re-reference, resample, etc. the signal data.
+            resp_features = resp_features(physiological_data, physiological_fs, csv_path=csv_path) 
 
             # Load the algorithmic annotations.
             algorithmic_annotations_file = os.path.join(data_folder, ALGORITHMIC_ANNOTATIONS_SUBFOLDER, site_id, f"{patient_id}_ses-{session_id}_caisr_annotations.edf")
