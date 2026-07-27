@@ -10,9 +10,9 @@ set -euo pipefail
 # Each team member can modify this path to
 # match their local dataset location.
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-FULL_DATA_PATH="${FULL_DATA_PATH:-data/training_set}"  # Override with env var if needed
+FULL_DATA_PATH="${FULL_DATA_PATH:-D:/data/training_set}"  # Override with env var if needed
 
-SMOKE_PATH="data/training_smoke"
+SMOKE_PATH="D:/data/training_smoke"
 N_RECORDS="${N_RECORDS:-20}"
 
 echo "Creating smoke dataset..."
@@ -62,8 +62,8 @@ python - <<'PY'
 import csv
 from pathlib import Path
 
-full_data = Path("data/training_set")
-smoke_path = Path("data/training_smoke")
+full_data = Path("D:/data/training_set")
+smoke_path = Path("D:/data/training_smoke")
 
 source_csv = full_data / "demographics.csv"
 target_csv = smoke_path / "demographics.csv"

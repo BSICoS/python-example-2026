@@ -1,25 +1,22 @@
 import numpy as np
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 
 from .config import FEATURE_CORRELATION_THRESHOLD
 
-
 DEFAULT_KNN_NEIGHBORS = 5
-PCA_VARIANCE_THRESHOLD = 0.7
 
-
-def build_preprocessor(num_samples, categorical_indices=None, apply_pca=False):
+#Crea una instancia del preprocesador principal de forma segura. Tiene un control para evitar que el número de vecinos (n_neighbors) para el algoritmo KNN sea mayor o igual al número total de muestras disponibles en el dataset (lo cual rompería el algoritmo).
+def build_preprocessor(num_samples, categorical_indices=None):
     neighbors = min(DEFAULT_KNN_NEIGHBORS, max(1, num_samples - 1)) if num_samples > 1 else 1
+    
     return CorrelationAwarePreprocessor(
         n_neighbors=neighbors,
         categorical_indices=categorical_indices,
-        correlation_threshold=FEATURE_CORRELATION_THRESHOLD,
-        apply_pca=apply_pca,
+        correlation_threshold=FEATURE_CORRELATION_THRESHOLD
     )
 
-
+#Obtain feature names after preprocessing. If a preprocessor is provided, it will use its get_feature_names_out method to get the processed feature names. Otherwise, it will return the original feature names as a list.
 def get_processed_feature_names(feature_names, preprocessor=None):
     if preprocessor is None:
         return list(feature_names)
@@ -29,7 +26,7 @@ def get_processed_feature_names(feature_names, preprocessor=None):
 
     return list(feature_names)
 
-
+#Obtain feature indices after preprocessing. If a preprocessor is provided, it will use its transform_feature_indices method to get the processed feature indices. Otherwise, it will return the original feature indices as a dictionary.
 def remap_feature_indices(preprocessor, feature_indices):
     if preprocessor is None or not hasattr(preprocessor, 'transform_feature_indices'):
         return {
@@ -39,13 +36,13 @@ def remap_feature_indices(preprocessor, feature_indices):
 
     return preprocessor.transform_feature_indices(feature_indices)
 
-
+#El método fit calcula la matriz de correlación de Pearson entre todas las variables de X. Si dos variables superan el umbral estipulado (threshold), añade la segunda a una "lista negra" para descartarla, quedándose con los índices limpios en self.selected_indices_.
 class CorrelationThresholdSelector:
     def __init__(self, threshold):
         self.threshold = float(threshold)
         self.selected_indices_ = None
 
-    def fit(self, X):
+    def fit(self, X, y=None):
         X = np.asarray(X, dtype=np.float32)
         n_samples, n_features = X.shape
 
@@ -92,69 +89,10 @@ class CorrelationThresholdSelector:
             input_features = [f'feature_{index}' for index in self.selected_indices_]
 
         return np.asarray([input_features[index] for index in self.selected_indices_], dtype=object)
-
-
-class PCAReducer:
-    """Applies PCA for dimensionality reduction while preserving a specified variance threshold."""
     
-    def __init__(self, variance_threshold=PCA_VARIANCE_THRESHOLD):
-        self.variance_threshold = float(variance_threshold)
-        self.pca = None
-        self.n_components_used = None
-
-    def fit(self, X):
-        """Fit PCA to the data, determining optimal number of components."""
-        X = np.asarray(X, dtype=np.float32)
-        
-        if X.shape[0] < 2 or X.shape[1] < 2:
-            self.pca = None
-            self.n_components_used = X.shape[1]
-            return self
-        
-        # Fit PCA with all possible components initially
-        n_components = min(X.shape[0] - 1, X.shape[1])
-        temp_pca = PCA(n_components=n_components, random_state=42)
-        temp_pca.fit(X)
-        
-        # Calculate cumulative variance explained
-        cumsum_var = np.cumsum(temp_pca.explained_variance_ratio_)
-        
-        # Find number of components needed for target variance
-        n_comp = np.argmax(cumsum_var >= self.variance_threshold) + 1
-        n_comp = max(1, min(n_comp, n_components))
-        
-        # Fit final PCA with optimal components
-        self.pca = PCA(n_components=n_comp, random_state=42)
-        self.pca.fit(X)
-        self.n_components_used = n_comp
-        
-        return self
-
-    def transform(self, X):
-        """Transform data using fitted PCA."""
-        X = np.asarray(X, dtype=np.float32)
-        
-        if self.pca is None:
-            return X
-        
-        return np.asarray(self.pca.transform(X), dtype=np.float32)
-
-    def fit_transform(self, X):
-        """Fit PCA and transform data."""
-        self.fit(X)
-        return self.transform(X)
-
-    def get_feature_names_out(self, input_features=None):
-        """Generate names for PCA components."""
-        if self.pca is None:
-            return input_features if input_features is not None else np.array(['feature_0'])
-        
-        n_features = self.pca.n_components_
-        return np.asarray([f'PCA_{i}' for i in range(n_features)], dtype=object)
-
-
+#Separa mediante índices qué columnas son numéricas y cuáles categóricas para asegurarse de aplicar el StandardScaler únicamente a las numéricas a través del método _scale_numerical_columns
 class CorrelationAwarePreprocessor:
-    def __init__(self, n_neighbors, categorical_indices, correlation_threshold, apply_pca=True):
+    def __init__(self, n_neighbors, categorical_indices, correlation_threshold):
         self.n_neighbors = n_neighbors
         if categorical_indices is None:
             self.categorical_indices = np.array([], dtype=np.int32)
@@ -163,8 +101,9 @@ class CorrelationAwarePreprocessor:
         self.imputer = KNNImputer(n_neighbors=n_neighbors, keep_empty_features=True)
         self.scaler = StandardScaler()
         self.selector = CorrelationThresholdSelector(correlation_threshold)
-        self.pca = PCAReducer() if apply_pca else None
         self._numerical_indices = np.array([], dtype=np.int32)
+        # Guardaremos las modas calculadas en el fit para usarlas en el transform
+        self._categorical_modes = {} 
 
     def _get_numerical_indices(self, n_features):
         all_idx = np.arange(n_features, dtype=np.int32)
@@ -187,43 +126,84 @@ class CorrelationAwarePreprocessor:
     def fit_transform(self, X):
         X = np.asarray(X, dtype=np.float32).copy()
         X[~np.isfinite(X)] = np.nan
-
-        X_imputed = np.asarray(self.imputer.fit_transform(X), dtype=np.float32)
+        
         self._numerical_indices = self._get_numerical_indices(X.shape[1])
-        X_out = self._scale_numerical_columns(X_imputed, fit=True)
-        self.selector.fit(X_out)
-        X_selected = np.asarray(self.selector.transform(X_out), dtype=np.float32)
-        
-        # Apply PCA if enabled
-        if self.pca is not None:
-            X_final = self.pca.fit_transform(X_selected)
+        X_out = X.copy()
+
+        # 1. Imputación de Categóricas usando la Moda (Most Frequent) sin alterar nombres
+        for idx in self.categorical_indices:
+            col_data = X[:, idx]
+            valid_vals = col_data[np.isnan(col_data) == False]
+            if valid_vals.size > 0:
+                # Calcular la moda con numpy
+                vals, counts = np.unique(valid_vals, return_counts=True)
+                mode_val = vals[np.argmax(counts)]
+            else:
+                mode_val = 0.0 # Valor por defecto si toda la columna es NaN
+            self._categorical_modes[idx] = mode_val
+            X_out[np.isnan(col_data), idx] = mode_val
+
+        # 2. Imputación KNN aplicada EXCLUSIVAMENTE a las continuas
+        if self._numerical_indices.size > 0:
+            X_num = X[:, self._numerical_indices]
+            X_num_imputed = np.asarray(self.imputer.fit_transform(X_num), dtype=np.float32)
+            X_out[:, self._numerical_indices] = X_num_imputed
+
+        # 3. Escalado exclusivo de continuas
+        X_out = self._scale_numerical_columns(X_out, fit=True)
+
+        # 4. Ajustar el selector de correlación SOLAMENTE con las continuas
+        if self._numerical_indices.size > 0:
+            X_num_scaled = X_out[:, self._numerical_indices]
+            self.selector.fit(X_num_scaled)
         else:
-            X_final = X_selected
-        
-        return np.asarray(X_final, dtype=np.float32)
+            # Si no hay numéricas, el selector selecciona todo (vacío)
+            self.selector.selected_indices_ = np.array([], dtype=np.int32)
+
+        # 5. Retornar las Continuas Seleccionadas + TODAS las Categóricas (sin filtrar)
+        return self._combine_outputs(X_out)
 
     def transform(self, X):
         X = np.asarray(X, dtype=np.float32).copy()
         X[~np.isfinite(X)] = np.nan
-        X_imputed = np.asarray(self.imputer.transform(X), dtype=np.float32)
-        X_out = self._scale_numerical_columns(X_imputed, fit=False)
-        X_selected = np.asarray(self.selector.transform(X_out), dtype=np.float32)
+        X_out = X.copy()
+
+        # 1. Aplicar la moda guardada a las categóricas
+        for idx in self.categorical_indices:
+            col_data = X[:, idx]
+            mode_val = self._categorical_modes.get(idx, 0.0)
+            X_out[np.isnan(col_data), idx] = mode_val
+
+        # 2. Aplicar el KNN transform a las continuas
+        if self._numerical_indices.size > 0:
+            X_num = X[:, self._numerical_indices]
+            X_num_imputed = np.asarray(self.imputer.transform(X_num), dtype=np.float32)
+            X_out[:, self._numerical_indices] = X_num_imputed
+
+        # 3. Aplicar el escalado a las continuas
+        X_out = self._scale_numerical_columns(X_out, fit=False)
+
+        # 4. Combinar las continuas filtradas y las categóricas
+        return self._combine_outputs(X_out)
+
+    def _combine_outputs(self, X_out):
+        # Mapea los índices internos elegidos por el selector a los índices reales de la matriz original X
+        real_selected_num_indices = self._numerical_indices[self.selector.selected_indices_]
         
-        # Apply PCA if enabled
-        if self.pca is not None:
-            X_final = self.pca.transform(X_selected)
-        else:
-            X_final = X_selected
-        
-        return np.asarray(X_final, dtype=np.float32)
+        # Combinamos los índices de las numéricas que sobrevivieron junto a todas las categóricas
+        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices]).astype(np.int32)
+        return X_out[:, final_indices]
 
     def transform_feature_indices(self, feature_indices):
         if self.selector.selected_indices_ is None:
             raise ValueError('Preprocessor has not been fitted.')
 
+        real_selected_num_indices = self._numerical_indices[self.selector.selected_indices_]
+        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices]).astype(np.int32)
+
         index_lookup = {
             int(raw_index): int(processed_index)
-            for processed_index, raw_index in enumerate(self.selector.selected_indices_)
+            for processed_index, raw_index in enumerate(final_indices)
         }
         remapped = {}
         for name, indices in feature_indices.items():
@@ -236,10 +216,16 @@ class CorrelationAwarePreprocessor:
         return remapped
 
     def get_feature_names_out(self, input_features=None):
-        selector_names = self.selector.get_feature_names_out(input_features)
+        if self.selector.selected_indices_ is None:
+            raise ValueError('Preprocessor has not been fitted.')
         
-        # If PCA is applied, return PCA component names
-        if self.pca is not None:
-            return self.pca.get_feature_names_out(selector_names)
+        if input_features is None:
+            return None
+
+        real_selected_num_indices = self._numerical_indices[self.selector.selected_indices_]
+        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices]).astype(np.int32)
         
-        return selector_names
+        return np.asarray([input_features[index] for index in final_indices], dtype=object)
+    #Cambios:
+    #Aislamiento de la Correlación: El CorrelationThresholdSelector ahora trabaja solo dentro del sub-pipeline numérico (numeric_sub_pipeline). La matriz de correlación de Pearson se calcula única y exclusivamente con los datos continuos escalados. Las variables categóricas quedan completamente a salvo y no se eliminan por este criterio.
+    # Imputación Segmentada por Tipo de Dato: * Las numéricas van al KNNImputer (donde la distancia euclídea ahora sí tiene sentido matemático).Las categóricas se desvían al SimpleImputer(strategy='most_frequent'), calculando la moda de forma independiente.

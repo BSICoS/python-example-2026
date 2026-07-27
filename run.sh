@@ -12,9 +12,9 @@ COMMAND="$1"
 # CONFIGURATION
 # ============================================
 
-TRAIN_DATA_REL="data/training_set"
-RUN_DATA_REL="data/test_set"
-SMOKE_DATA_REL="data/training_smoke"
+TRAIN_DATA_REL="D:/data/training_set"
+RUN_DATA_REL="D:/data/test_set"
+SMOKE_DATA_REL="D:/data/training_smoke"
 
 IMAGE_NAME="cinc2026"
 
@@ -25,14 +25,20 @@ FEATURE_CACHE_REL=".feature_cache"
 OUT_FULL_REL="outputs"
 OUT_SMOKE_REL="outputs_smoke"
 DEMOGRAPHICS_FILE="demographics.csv"
+PREVALENCE_FILE="prevalence.csv"
 
 # ============================================
 # HELPERS
 # ============================================
 
 get_absolute_path() {
-    local rel_path="$1"
-    (cd "$rel_path" && pwd)
+    local target_path="$1"
+    # Si la ruta ya es absoluta (empieza por C:, D:, X:, etc.) la dejamos tal cual
+    if [[ "$target_path" =~ ^[A-Za-z]: ]]; then
+        echo "$target_path"
+    else
+        (cd "$target_path" && pwd)
+    fi
 }
 
 ensure_directory() {
@@ -55,22 +61,26 @@ docker_cli() {
 }
 
 evaluate_predictions() {
-    local data_dir="$1"
-    local output_dir="$2"
-    local label="$3"
-    local data_dir_docker output_dir_docker
+    local code_path="$1"
+    local data_path="$2"
+    local output_path="$3"
+    local label="$4"
+    local code_path_docker data_path_docker output_path_docker
 
-    data_dir_docker="$(to_docker_path "$data_dir")"
-    output_dir_docker="$(to_docker_path "$output_dir")"
+    code_path_docker="$(to_docker_path "$code_path")"
+    data_path_docker="$(to_docker_path "$data_path")"
+    output_path_docker="$(to_docker_path "$output_path")"
 
     echo "Evaluating ${label} predictions..."
     docker_cli run --rm \
-        -v "${data_dir_docker}:/challenge/eval_data:ro" \
-        -v "${output_dir_docker}:/challenge/eval_outputs:ro" \
+        -v "${code_path_docker}:/challenge" \
+        -v "${data_path_docker}:/challenge/eval_data:ro" \
+        -v "${output_path_docker}:/challenge/predictions:ro" \
         "$IMAGE_NAME" \
         python evaluate_model.py \
             -d "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
-            -o "/challenge/eval_outputs/${DEMOGRAPHICS_FILE}"
+            -p "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
+            -o "/challenge/predictions/${DEMOGRAPHICS_FILE}"
 }
 
 evaluate_predictions_dev() {
@@ -90,6 +100,7 @@ evaluate_predictions_dev() {
         "$IMAGE_NAME" \
         python evaluate_model.py \
             -d "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
+            -p "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
             -o "$output_path/${DEMOGRAPHICS_FILE}"
 }
 
@@ -181,9 +192,16 @@ run_full() {
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
 
     if dataset_has_labels "$run_data"; then
-        evaluate_predictions "$run_data" "$out_full" "run-dataset"
+        local code_path
+        code_path="$(get_absolute_path ".")"
+
+        evaluate_predictions \
+            "$code_path" \
+            "$run_data" \
+            "$out_full" \
+            "run-dataset"
     else
-        echo "Skipping evaluation for run dataset (labels not present in ${RUN_DATA_REL}/${DEMOGRAPHICS_FILE})."
+        echo "Skipping evaluation..."
     fi
 }
 
@@ -222,9 +240,16 @@ eval_full() {
     out_full="$(get_absolute_path "$OUT_FULL_REL")"
 
     if dataset_has_labels "$run_data"; then
-        evaluate_predictions "$run_data" "$out_full" "run-dataset"
+        local code_path
+        code_path="$(get_absolute_path ".")"
+
+        evaluate_predictions \
+            "$code_path" \
+            "$run_data" \
+            "$out_full" \
+            "run-dataset"
     else
-        echo "Skipping evaluation for run dataset (labels not present in ${RUN_DATA_REL}/${DEMOGRAPHICS_FILE})."
+        echo "Skipping evaluation..."
     fi
 }
 
@@ -234,7 +259,14 @@ eval_smoke() {
     smoke_data="$(get_absolute_path "$SMOKE_DATA_REL")"
     out_smoke="$(get_absolute_path "$OUT_SMOKE_REL")"
 
-    evaluate_predictions "$smoke_data" "$out_smoke" "smoke"
+    local code_path
+    code_path="$(get_absolute_path ".")"
+
+    evaluate_predictions \
+        "$code_path" \
+        "$smoke_data" \
+        "$out_smoke" \
+        "smoke"
 }
 
 # =====================

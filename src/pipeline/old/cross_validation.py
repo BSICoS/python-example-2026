@@ -17,7 +17,7 @@ class CrossValidationConfig:
     optimize_hyperparameter_search: bool = False
     outer_random_splits: int = 5
     random_state: int = 42
-    search_iterations: int = 50
+    search_iterations: int = 20
     fixed_hyperparameters: dict[str, Any] = field(default_factory=dict)
 
 
@@ -257,22 +257,12 @@ class EnsembleCrossValidator:
             y_train = labels[split.train_idx]
             search_site_groups = None if site_groups is None else site_groups[split.train_idx]
 
-            # --- CORRECCIÓN: Soporte para variables globales fijas ---
             fold_preprocessor = self.build_preprocessor(len(y_train), categorical_indices)
-            
-            if fold_preprocessor is not None:
-                # Si hay preprocesador activo, hace la selección dinámica por fold (Flujo original)
-                X_train_proc = np.asarray(fold_preprocessor.fit_transform(X_train), dtype=np.float32)
-                remapped_feature_indices = fold_preprocessor.transform_feature_indices(feature_indices)
-                print(
-                    f"    Correlation selector kept {X_train_proc.shape[1]}/{X_train.shape[1]} features"
-                )
-            else:
-                # Si viene None, significa que las variables ya están fijadas y procesadas desde afuera
-                X_train_proc = np.asarray(X_train, dtype=np.float32)
-                remapped_feature_indices = feature_indices # Ya vienen mapeadas de afuera
-                print(f"    Variables fijas detectadas. Usando {X_train_proc.shape[1]} características fijas.")
-
+            X_train_proc = np.asarray(fold_preprocessor.fit_transform(X_train), dtype=np.float32)
+            remapped_feature_indices = fold_preprocessor.transform_feature_indices(feature_indices)
+            print(
+                f"    Correlation selector kept {X_train_proc.shape[1]}/{X_train.shape[1]} features"
+            )
             fold_best_params = self._search_hyperparams(
                 X_train_proc[:, remapped_feature_indices['all']],
                 y_train,
@@ -289,7 +279,7 @@ class EnsembleCrossValidator:
         consensus = self._consensus_params([item['params'] for item in selected_params_per_fold])
         print(f"  Consensus hyperparameters: {consensus}")
         return consensus, selected_params_per_fold
-    
+
     def _evaluate_with_fixed_params(
         self,
         split_plan,
@@ -310,22 +300,12 @@ class EnsembleCrossValidator:
             X_train, X_val = features[split.train_idx], features[split.validation_idx]
             y_train, y_val = labels[split.train_idx], labels[split.validation_idx]
 
-            # --- CORRECCIÓN: Soporte para variables globales fijas ---
             fold_preprocessor = self.build_preprocessor(len(y_train), categorical_indices)
-            
-            if fold_preprocessor is not None:
-                # Flujo Original dinámico por fold
-                X_train_proc = np.asarray(fold_preprocessor.fit_transform(X_train), dtype=np.float32)
-                remapped_feature_indices = fold_preprocessor.transform_feature_indices(feature_indices)
-                print(
-                    f"    Correlation selector kept {X_train_proc.shape[1]}/{X_train.shape[1]} features"
-                )
-            else:
-                # Flujo con Variables fijas pre-calculadas afuera
-                X_train_proc = np.asarray(X_train, dtype=np.float32)
-                remapped_feature_indices = feature_indices # Ya vienen mapeadas de afuera
-                print(f"    Variables fijas detectadas. Usando {X_train_proc.shape[1]} características fijas.")
-
+            X_train_proc = np.asarray(fold_preprocessor.fit_transform(X_train), dtype=np.float32)
+            remapped_feature_indices = fold_preprocessor.transform_feature_indices(feature_indices)
+            print(
+                f"    Correlation selector kept {X_train_proc.shape[1]}/{X_train.shape[1]} features"
+            )
             fold_models = self.fit_ensemble(
                 X_train_proc,
                 y_train,
@@ -336,7 +316,7 @@ class EnsembleCrossValidator:
                 'models': fold_models,
                 'feature_indices': remapped_feature_indices,
                 'modality_presence_indices': modality_presence_indices,
-                'preprocessor': fold_preprocessor, # Pasará como None, ideal para evitar re-transformar en predicciones internas del fold
+                'preprocessor': fold_preprocessor,
                 'threshold': self.default_threshold,
             }
 
@@ -360,7 +340,7 @@ class EnsembleCrossValidator:
             self._print_metrics(f"    Fold {split.fold_index} metrics:", fold_metric_row)
 
         return fold_metrics, oof_probabilities
-    
+
     def _finalize_result(self, consensus_params, labels, oof_probabilities, best_params_per_fold, fold_metrics, metadata):
         consensus = dict(consensus_params or {})
 
