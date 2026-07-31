@@ -5,6 +5,7 @@ from .ecg_peak_detection import pan_tompkins
 from .ecg_hrv_features import compute_hrv_hrf
 from .ecg_nn_interpolation import interpolate_nn_pchip
 from .ecg_rr_cleaning import remove_ectopic_beats
+from .ecg_age import compute_ecgage
 
 
 def compute_ecg_features(ecg_signal, fs, ecg_feature_length):
@@ -37,7 +38,7 @@ def compute_ecg_features(ecg_signal, fs, ecg_feature_length):
     b, a = cast(tuple[np.ndarray, np.ndarray], butter(3, 0.5/(fs/2), btype='high', output='ba'))
     ecg_signal = filtfilt(b, a, ecg_signal)
 
-    b, a = cast(tuple[np.ndarray, np.ndarray], butter(3, 45/(fs/2), btype='low', output='ba'))
+    b, a = cast(tuple[np.ndarray, np.ndarray], butter(3, 50/(fs/2), btype='low', output='ba'))
     ecg_signal = filtfilt(b, a, ecg_signal)
 
     _, r_locs, _ = pan_tompkins(ecg_signal, fs, 0)
@@ -61,6 +62,8 @@ def compute_ecg_features(ecg_signal, fs, ecg_feature_length):
 
     metrics = compute_hrv_hrf(nn_intervals, fs)
 
+    ECGage = compute_ecgage(ecg_signal)
+
     features = np.array([
         metrics["PIP"],
         metrics["PNNLS"],
@@ -70,6 +73,7 @@ def compute_ecg_features(ecg_signal, fs, ecg_feature_length):
         metrics["RMSSD"],
         metrics["HF"],
         ectopic_perc,
+        ECGage,
     ], dtype=np.float32)
 
     return features

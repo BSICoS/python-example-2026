@@ -51,8 +51,8 @@ FEATURE_NAMES = (
 )
 
 SEGMENT_AGGREGATION_FUNCTIONS = {
-    'Max': lambda values: float(np.max(values)),
-    'Min': lambda values: float(np.min(values)),
+    'Max': lambda values: float(np.percentile(values, 95)),
+    'Min': lambda values: float(np.percentile(values, 5)),
     'Mean': lambda values: float(np.mean(values)),
     'Median': lambda values: float(np.median(values)),
     'Std': lambda values: float(np.std(values)),

@@ -7,3 +7,18 @@ scipy==1.13.1
 tqdm==4.67.1
 xgboost==3.2.0
 matplotlib==3.9.0
+
+# === DEPENDENCIAS PRINCIPALES PARA PROPHECG ===
+# Instalamos PyTorch 
+torch
+#torchvision
+#torchaudio
+
+# Módulos clave requeridos por PROPHECG
+#neurokit2==0.2.11
+#PyYAML==6.0.2
+#requests==2.32.4
+#pillow==11.2.1
+#Jinja2==3.1.6
+#networkx==3.4.2
+#sympy==1.14.0
