@@ -30,12 +30,17 @@ DEMOGRAPHIC_FEATURE_NAMES = (
 
 
 def _build_aggregated_feature_names(segment_feature_names):
-    return tuple(
-        f'{feature_name}_{aggregation_name}'
-        for feature_name in segment_feature_names
-        for aggregation_name in SEGMENT_AGGREGATION_NAMES
-    )
-
+    names = []
+    for feature_name in segment_feature_names:
+        aggregations = ('Median',) if feature_name == 'ECGage' else SEGMENT_AGGREGATION_NAMES
+        for aggregation_name in aggregations:
+            names.append(f'{feature_name}_{aggregation_name}')
+    
+    # Add the difference feature if ECGage is present in this group
+    if 'ECGage' in segment_feature_names:
+        names.append('ECGage_Age_Diff')
+        
+    return tuple(names)
 
 FEATURE_NAME_GROUPS = {
     'demographics': DEMOGRAPHIC_FEATURE_NAMES,
@@ -183,13 +188,22 @@ def _save_cached_feature_vector(cache_file, feature_vector):
 
     csv_file = _get_feature_cache_csv_file(cache_file)
     temp_csv_file = f"{csv_file}.tmp"
+    
+    # Safely match feature names to payload length
+    feature_names = list(get_feature_names())
+    if len(payload) != len(feature_names):
+        if len(payload) > len(feature_names):
+            extra = len(payload) - len(feature_names)
+            feature_names += [f"extra_feature_{i}" for i in range(extra)]
+        else:
+            feature_names = feature_names[:len(payload)]
+
     try:
-        pd.DataFrame([payload], columns=get_feature_names()).to_csv(temp_csv_file, index=False)
+        pd.DataFrame([payload], columns=feature_names).to_csv(temp_csv_file, index=False)
         os.replace(temp_csv_file, csv_file)
     finally:
         if os.path.exists(temp_csv_file):
             os.remove(temp_csv_file)
-
 
 def extract_demographic_features(data):
     age_value = data.get(HEADERS['age'])
@@ -290,24 +304,33 @@ def _iter_signal_segments(physiological_data, physiological_fs):
 
 
 def _aggregate_segment_feature_vectors(feature_vectors, segment_feature_names):
-    aggregated_length = len(segment_feature_names) * len(SEGMENT_AGGREGATION_NAMES)
     if not feature_vectors:
-        return np.full(aggregated_length, np.nan, dtype=np.float32)
+        # Calculate total length dynamically based on the features being processed
+        total_len = sum(
+            1 if name == 'ECGage' else len(SEGMENT_AGGREGATION_NAMES)
+            for name in segment_feature_names
+        )
+        return np.full(total_len, np.nan, dtype=np.float32)
 
     matrix = np.asarray(feature_vectors, dtype=np.float32)
     aggregated_values = []
 
-    for column_index in range(matrix.shape[1]):
+    for column_index, feature_name in enumerate(segment_feature_names):
         column_values = matrix[:, column_index]
         finite_values = column_values[np.isfinite(column_values)]
 
+        # Determine which aggregations to apply for this feature
+        aggregations_to_run = (
+            ('Median',) if feature_name == 'ECGage' else SEGMENT_AGGREGATION_NAMES
+        )
+
         if finite_values.size == 0:
-            aggregated_values.extend([np.nan] * len(SEGMENT_AGGREGATION_NAMES))
+            aggregated_values.extend([np.nan] * len(aggregations_to_run))
             continue
 
         aggregated_values.extend(
             SEGMENT_AGGREGATION_FUNCTIONS[aggregation_name](finite_values)
-            for aggregation_name in SEGMENT_AGGREGATION_NAMES
+            for aggregation_name in aggregations_to_run
         )
 
     return np.asarray(aggregated_values, dtype=np.float32)
@@ -369,6 +392,8 @@ def extract_extended_physiological_features(physiological_data, physiological_fs
 
 def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_id, session_id, csv_path, require_physiological_data):
     demographic_features = extract_demographic_features(patient_data)
+    chronological_age = demographic_features[0]
+
     physiological_data_file = _get_physiological_data_file(
         data_folder,
         site_id,
@@ -376,6 +401,9 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
         session_id,
     )
     print(f"Extracting features for patient {patient_id}, session {session_id} from file: {physiological_data_file}")
+    
+    total_physio_names_len = sum(len(FEATURE_NAME_GROUPS[g]) for g in ('resp', 'eeg', 'ecg'))
+
     if os.path.exists(physiological_data_file):
         physiological_data, physiological_fs = _load_required_signal_data(physiological_data_file, csv_path)
         physiological_features = extract_extended_physiological_features(
@@ -386,10 +414,38 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
     elif require_physiological_data:
         raise FileNotFoundError(f"Missing physiological data for {patient_id}.")
     else:
-        physiological_features = np.full(TOTAL_PHYSIOLOGICAL_FEATURE_LENGTH, np.nan, dtype=np.float32)
+        physiological_features = np.full(total_physio_names_len, np.nan, dtype=np.float32)
 
-    return np.hstack([demographic_features, physiological_features]).astype(np.float32)
+    # Combine demographic and physiological features first
+    combined = np.hstack([demographic_features, physiological_features]).astype(np.float32)
 
+    # Fill in ECGage_Age_Diff if it exists in feature names
+    feature_names = get_feature_names()
+    if 'ECGage_Age_Diff' in feature_names:
+        diff_idx = feature_names.index('ECGage_Age_Diff')
+        
+        # Make sure vector length matches feature_names length
+        if len(combined) < len(feature_names):
+            combined = np.pad(combined, (0, len(feature_names) - len(combined)), constant_values=np.nan)
+        
+        # Calculate diff if ECGage_Median is present
+        if 'ECGage_Median' in feature_names:
+            ecg_median_idx = feature_names.index('ECGage_Median')
+            ecg_age_median = combined[ecg_median_idx]
+            
+            if np.isfinite(ecg_age_median) and np.isfinite(chronological_age):
+                combined[diff_idx] = np.float32(ecg_age_median - chronological_age)
+            else:
+                combined[diff_idx] = np.nan
+
+    # Ensure output strictly matches expected FEATURE_NAMES length
+    if len(combined) != len(feature_names):
+        if len(combined) > len(feature_names):
+            combined = combined[:len(feature_names)]
+        else:
+            combined = np.pad(combined, (0, len(feature_names) - len(combined)), constant_values=np.nan)
+
+    return combined
 
 def get_or_create_record_feature_vector(record, data_folder, patient_data, csv_path=DEFAULT_CSV_PATH, require_physiological_data=True):
     patient_id = record[HEADERS['bids_folder']]
