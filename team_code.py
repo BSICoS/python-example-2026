@@ -94,7 +94,6 @@ atexit.register(_close_run_model_pbar)
 atexit.register(_flush_run_feature_exports)
 atexit.register(_restore_print)
 
-
 ################################################################################
 #
 # Required functions. Edit these functions to add your code, but do not change the arguments for the functions.
