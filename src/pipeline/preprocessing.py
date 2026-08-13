@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
 
@@ -91,23 +92,22 @@ class CorrelationThresholdSelector:
         return np.asarray([input_features[index] for index in self.selected_indices_], dtype=object)
     
 #Separa mediante índices qué columnas son numéricas y cuáles categóricas para asegurarse de aplicar el StandardScaler únicamente a las numéricas a través del método _scale_numerical_columns
-class CorrelationAwarePreprocessor:
+class CorrelationAwarePreprocessor(BaseEstimator, TransformerMixin):
     def __init__(self, n_neighbors, categorical_indices, correlation_threshold):
         self.n_neighbors = n_neighbors
-        if categorical_indices is None:
-            self.categorical_indices = np.array([], dtype=np.int32)
-        else:
-            self.categorical_indices = np.asarray(categorical_indices, dtype=np.int32)
+        self.categorical_indices = categorical_indices
+        self.correlation_threshold = correlation_threshold
         self.imputer = KNNImputer(n_neighbors=n_neighbors, keep_empty_features=True)
         self.scaler = StandardScaler()
         self.selector = CorrelationThresholdSelector(correlation_threshold)
         self._numerical_indices = np.array([], dtype=np.int32)
+        self.categorical_indices_ = np.array([], dtype=np.int32)
         # Guardaremos las modas calculadas en el fit para usarlas en el transform
         self._categorical_modes = {} 
 
     def _get_numerical_indices(self, n_features):
         all_idx = np.arange(n_features, dtype=np.int32)
-        return np.setdiff1d(all_idx, self.categorical_indices)
+        return np.setdiff1d(all_idx, self.categorical_indices_)
 
     def _scale_numerical_columns(self, X_imputed, fit=False):
         X_out = X_imputed.copy()
@@ -123,15 +123,25 @@ class CorrelationAwarePreprocessor:
         X_out[:, self._numerical_indices] = X_num_scaled
         return X_out
 
-    def fit_transform(self, X):
+    def fit(self, X, y=None):
+        self.fit_transform(X, y=y)
+        return self
+
+    def fit_transform(self, X, y=None, **fit_params):
         X = np.asarray(X, dtype=np.float32).copy()
         X[~np.isfinite(X)] = np.nan
+        self.categorical_indices_ = (
+            np.array([], dtype=np.int32)
+            if self.categorical_indices is None
+            else np.asarray(self.categorical_indices, dtype=np.int32)
+        )
+        self._categorical_modes = {}
         
         self._numerical_indices = self._get_numerical_indices(X.shape[1])
         X_out = X.copy()
 
         # 1. Imputación de Categóricas usando la Moda (Most Frequent) sin alterar nombres
-        for idx in self.categorical_indices:
+        for idx in self.categorical_indices_:
             col_data = X[:, idx]
             valid_vals = col_data[np.isnan(col_data) == False]
             if valid_vals.size > 0:
@@ -169,7 +179,7 @@ class CorrelationAwarePreprocessor:
         X_out = X.copy()
 
         # 1. Aplicar la moda guardada a las categóricas
-        for idx in self.categorical_indices:
+        for idx in self.categorical_indices_:
             col_data = X[:, idx]
             mode_val = self._categorical_modes.get(idx, 0.0)
             X_out[np.isnan(col_data), idx] = mode_val
@@ -191,7 +201,7 @@ class CorrelationAwarePreprocessor:
         real_selected_num_indices = self._numerical_indices[self.selector.selected_indices_]
         
         # Combinamos los índices de las numéricas que sobrevivieron junto a todas las categóricas
-        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices]).astype(np.int32)
+        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices_]).astype(np.int32)
         return X_out[:, final_indices]
 
     def transform_feature_indices(self, feature_indices):
@@ -199,7 +209,7 @@ class CorrelationAwarePreprocessor:
             raise ValueError('Preprocessor has not been fitted.')
 
         real_selected_num_indices = self._numerical_indices[self.selector.selected_indices_]
-        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices]).astype(np.int32)
+        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices_]).astype(np.int32)
 
         index_lookup = {
             int(raw_index): int(processed_index)
@@ -223,7 +233,7 @@ class CorrelationAwarePreprocessor:
             return None
 
         real_selected_num_indices = self._numerical_indices[self.selector.selected_indices_]
-        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices]).astype(np.int32)
+        final_indices = np.concatenate([real_selected_num_indices, self.categorical_indices_]).astype(np.int32)
         
         return np.asarray([input_features[index] for index in final_indices], dtype=object)
     #Cambios:

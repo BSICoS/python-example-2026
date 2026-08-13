@@ -4,6 +4,7 @@ from typing import Any, Callable, Optional
 import numpy as np
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import LeaveOneGroupOut, RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
 
 from .metrics import resolve_search_scoring
 
@@ -266,26 +267,12 @@ class EnsembleCrossValidator:
             y_train = labels[split.train_idx]
             search_site_groups = None if site_groups is None else site_groups[split.train_idx]
 
-            # --- CORRECCIÓN: Soporte para variables globales fijas ---
-            fold_preprocessor = self.build_preprocessor(len(y_train), categorical_indices)
-            
-            if fold_preprocessor is not None:
-                # Si hay preprocesador activo, hace la selección dinámica por fold (Flujo original)
-                X_train_proc = np.asarray(fold_preprocessor.fit_transform(X_train), dtype=np.float32)
-                remapped_feature_indices = fold_preprocessor.transform_feature_indices(feature_indices)
-                print(
-                    f"    Correlation selector kept {X_train_proc.shape[1]}/{X_train.shape[1]} features"
-                )
-            else:
-                # Si viene None, significa que las variables ya están fijadas y procesadas desde afuera
-                X_train_proc = np.asarray(X_train, dtype=np.float32)
-                remapped_feature_indices = feature_indices # Ya vienen mapeadas de afuera
-                print(f"    Variables fijas detectadas. Usando {X_train_proc.shape[1]} características fijas.")
 
             fold_best_params = self._search_hyperparams(
-                X_train_proc[:, remapped_feature_indices['all']],
+                X_train,
                 y_train,
                 site_groups=search_site_groups,
+                categorical_indices=categorical_indices,
             )
             print(f"    Best params: {fold_best_params}")
             selected_params_per_fold.append({
@@ -409,7 +396,7 @@ class EnsembleCrossValidator:
             metrics=metrics,
         )
 
-    def _search_hyperparams(self, X_train, y_train, site_groups=None):
+    def _search_hyperparams(self, X_train, y_train, site_groups=None, categorical_indices=None):
         inner_cv, fit_kwargs = self._build_inner_cv(y_train, site_groups)
         if inner_cv is None:
             return {}
@@ -420,9 +407,22 @@ class EnsembleCrossValidator:
             age_feature_scale=self.search_age_feature_scale,
             age_feature_offset=self.search_age_feature_offset,
         )
+        search_preprocessor = self.build_preprocessor(len(y_train), categorical_indices)
+        if search_preprocessor is None:
+            estimator = self.build_search_model(y_train)
+            param_distributions = self.param_dist
+        else:
+            estimator = Pipeline([
+                ('preprocessor', search_preprocessor),
+                ('model', self.build_search_model(y_train)),
+            ])
+            param_distributions = {
+                f'model__{name}': values
+                for name, values in self.param_dist.items()
+            }
         search = RandomizedSearchCV(
-            estimator=self.build_search_model(y_train),
-            param_distributions=self.param_dist,
+            estimator=estimator,
+            param_distributions=param_distributions,
             n_iter=self.config.search_iterations,
             scoring=scoring,
             cv=inner_cv,
@@ -431,7 +431,10 @@ class EnsembleCrossValidator:
             refit=False,
         )
         search.fit(X_train, y_train, **fit_kwargs)
-        return search.best_params_
+        return {
+            name.removeprefix('model__'): value
+            for name, value in search.best_params_.items()
+        }
 
     def _build_inner_cv(self, y_train, site_groups=None):
         fit_kwargs = {}

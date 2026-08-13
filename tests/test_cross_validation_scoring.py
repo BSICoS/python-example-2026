@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import Pipeline
 from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator
 
 from src.pipeline.metrics import (
@@ -13,6 +14,7 @@ from src.pipeline.metrics import (
     resolve_search_scoring,
 )
 
+from src.pipeline.preprocessing import build_preprocessor
 
 def _read_config_literal(name):
     config_path = Path(__file__).parents[1] / 'src' / 'pipeline' / 'config.py'
@@ -69,7 +71,7 @@ class CrossValidationScoringTests(unittest.TestCase):
             config=config,
             param_dist={'max_depth': [3]},
             default_threshold=0.5,
-            build_preprocessor=lambda *args: None,
+            build_preprocessor=build_preprocessor,
             build_search_model=lambda labels: object(),
             fit_ensemble=lambda *args, **kwargs: None,
             predict_probabilities=lambda *args, **kwargs: None,
@@ -77,13 +79,17 @@ class CrossValidationScoringTests(unittest.TestCase):
             search_age_feature_scale=10.0,
             search_age_feature_offset=50.0,
         )
-        features = np.array([[-3.0], [3.0], [-2.9], [3.1]])
+        features = np.array([[-3.0, 0.1], [3.0, 0.9], [-2.9, 0.2], [3.1, 0.8]])
         labels = np.array([1, 1, 0, 0], dtype=np.int32)
 
         with patch('src.pipeline.cross_validation.RandomizedSearchCV') as search_class:
-            search_class.return_value.best_params_ = {'max_depth': 3}
+            search_class.return_value.best_params_ = {'model__max_depth': 3}
             params = runner._search_hyperparams(features, labels)
 
+        estimator = search_class.call_args.kwargs['estimator']
+        self.assertIsInstance(estimator, Pipeline)
+        self.assertEqual(list(estimator.named_steps), ['preprocessor', 'model'])
+        self.assertEqual(search_class.call_args.kwargs['param_distributions'], {'model__max_depth': [3]})
         self.assertEqual(params, {'max_depth': 3})
         scorer = search_class.call_args.kwargs['scoring']
         self.assertIsInstance(scorer, AgeConditionedAUROCScorer)

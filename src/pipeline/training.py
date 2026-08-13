@@ -1498,70 +1498,81 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     print(f"  Hyperparameter search: {'enabled' if cv_config.optimize_hyperparameter_search else 'disabled'}")
     print(f"  Hyperparameter search scoring: {cv_config.search_scoring}")
     
-    # 1. AJUSTE GLOBAL ÚNICO: Ajustamos el preprocesador de correlación una sola vez AQUÍ afuera
-    print("\n[INFO] Fijando variables de forma global antes del CV...")
-    preprocessor = build_preprocessor(len(labels), categorical_indices if categorical_indices else None)
-    
-    # Transformamos la matriz completa de entrenamiento
-    processed_features = np.asarray(preprocessor.fit_transform(features), dtype=np.float32)
-    
-    # Remapeamos los índices de los grupos del ensamble una sola vez
-    selected_feature_indices = preprocessor.transform_feature_indices(feature_indices)
-    processed_feature_names = get_processed_feature_names(feature_names, preprocessor=preprocessor)
-    
-    # Recuperamos los índices reales que sobrevivieron de las materias primas
-    real_selected_num_indices = preprocessor._numerical_indices[preprocessor.selector.selected_indices_]
-    selected_raw_feature_indices = np.concatenate([real_selected_num_indices, preprocessor.categorical_indices]).astype(np.int32)
-    
-    print(f"Correlation selector: kept {len(processed_feature_names)}/{len(feature_names)} features fijas para todo el experimento.")
-    global AGE_FEATURE_INDEX, AGE_FEATURE_SCALE, AGE_FEATURE_OFFSET
-    if 'Age' not in processed_feature_names:
-        raise ValueError("The 'Age' feature is required for age-conditioned AUROC scoring.")
     raw_age_feature_index = feature_names.index('Age')
-    AGE_FEATURE_INDEX = processed_feature_names.index('Age')
-    numerical_age_positions = np.flatnonzero(
-        preprocessor._numerical_indices == raw_age_feature_index
-    )
-    if numerical_age_positions.size != 1:
-        raise ValueError("Could not recover the scaling parameters for the 'Age' feature.")
-    numerical_age_position = int(numerical_age_positions[0])
-    AGE_FEATURE_SCALE = float(preprocessor.scaler.scale_[numerical_age_position])
-    AGE_FEATURE_OFFSET = float(preprocessor.scaler.mean_[numerical_age_position])
-    print(
-        f"--> [INFO] Age scaling: scale={AGE_FEATURE_SCALE:.6g}, "
-        f"mean={AGE_FEATURE_OFFSET:.6g}"
-    )
 
-    # Build demographic-aware combined feature indices
-    combined_indices = _get_combined_model_indices(selected_feature_indices)
-
-    # 2. CONFIGURACIÓN DEL CV CON DATOS YA FILTRADOS
+    # Cross-validation receives raw features and fits preprocessing inside each fold.
     cv_runner = EnsembleCrossValidator(
         config=cv_config,
         param_dist=PARAM_DIST,
         default_threshold=DEFAULT_ENSEMBLE_THRESHOLD,
-        build_preprocessor=lambda n, c: None,
+        build_preprocessor=build_preprocessor,
         build_search_model=_build_search_model,
         fit_ensemble=_fit_ensemble,
         predict_probabilities=predict_ensemble_probabilities,
-        search_age_feature_index=AGE_FEATURE_INDEX,
-        search_age_feature_scale=AGE_FEATURE_SCALE,
-        search_age_feature_offset=AGE_FEATURE_OFFSET,
+        search_age_feature_index=raw_age_feature_index,
+        search_age_feature_scale=1.0,
+        search_age_feature_offset=0.0,
     )
 
-    # --- Step 1: Nested CV para calibración con variables 100% fijas ---
-    print("Running nested CV for hyperparameter consensus (Variables Fijas)...")
+    # --- Step 1: Leakage-free nested CV for calibration and hyperparameter consensus ---
+    print("Running nested CV with fold-specific preprocessing...")
     cv_result = cv_runner.run(
-        processed_features,
+        features,
         labels,
-        selected_feature_indices,
-        modality_presence_indices=selected_feature_indices,
-        categorical_indices=None,
+        feature_indices,
+        modality_presence_indices=modality_presence_indices,
+        categorical_indices=categorical_indices if categorical_indices else None,
         site_groups=site_groups,
     )
     threshold = cv_result.threshold
     consensus = cv_result.consensus_params
     cv_metrics = cv_result.metrics
+
+    # Fit preprocessing on all samples only after CV, for the deployable final model.
+    print("\n[INFO] Fitting final preprocessing on all training data...")
+    preprocessor = build_preprocessor(
+        len(labels),
+        categorical_indices if categorical_indices else None,
+    )
+    processed_features = np.asarray(
+        preprocessor.fit_transform(features),
+        dtype=np.float32,
+    )
+    selected_feature_indices = preprocessor.transform_feature_indices(feature_indices)
+    processed_feature_names = get_processed_feature_names(
+        feature_names,
+        preprocessor=preprocessor,
+    )
+    real_selected_num_indices = preprocessor._numerical_indices[
+        preprocessor.selector.selected_indices_
+    ]
+    selected_raw_feature_indices = np.concatenate([
+        real_selected_num_indices,
+        preprocessor.categorical_indices_,
+    ]).astype(np.int32)
+    print(
+        f"Correlation selector: kept {len(processed_feature_names)}/"
+        f"{len(feature_names)} features for the final model."
+    )
+
+    global AGE_FEATURE_INDEX, AGE_FEATURE_SCALE, AGE_FEATURE_OFFSET
+    if 'Age' not in processed_feature_names:
+        raise ValueError(
+            "The 'Age' feature is required for age-conditioned AUROC scoring."
+        )
+    AGE_FEATURE_INDEX = processed_feature_names.index('Age')
+    numerical_age_positions = np.flatnonzero(
+        preprocessor._numerical_indices == raw_age_feature_index
+    )
+    if numerical_age_positions.size != 1:
+        raise ValueError(
+            "Could not recover the scaling parameters for the 'Age' feature."
+        )
+    numerical_age_position = int(numerical_age_positions[0])
+    AGE_FEATURE_SCALE = float(preprocessor.scaler.scale_[numerical_age_position])
+    AGE_FEATURE_OFFSET = float(preprocessor.scaler.mean_[numerical_age_position])
+    combined_indices = _get_combined_model_indices(selected_feature_indices)
+
 
     # --- Step 2: Fit final models on ALL data usando el consenso ---
     print("Fitting final ensemble on all training data with consensus hyperparameters...")
