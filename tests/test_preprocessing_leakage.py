@@ -75,9 +75,11 @@ class PreprocessingLeakageTests(unittest.TestCase):
             build_search_model=lambda fold_labels: object(),
             fit_ensemble=lambda *args, **kwargs: {},
             predict_probabilities=_predict_from_fold_preprocessor,
+            search_age_feature_index=0,
         )
 
-        with redirect_stdout(io.StringIO()):
+        output = io.StringIO()
+        with redirect_stdout(output):
             result = runner.run(
                 features,
                 labels,
@@ -87,6 +89,14 @@ class PreprocessingLeakageTests(unittest.TestCase):
 
         self.assertFalse(result.metrics['skipped'])
         self.assertEqual(_RecordingPreprocessor.fitted_sample_counts, [4, 4])
+        for fold_metrics in result.metrics['fold_metrics']:
+            self.assertIn('age_conditioned_auroc', fold_metrics)
+        self.assertIn('age_conditioned_auroc', result.metrics['fold_metric_summary'])
+        self.assertIn(
+            'age_conditioned_auroc',
+            result.metrics['oof_calibrated_metrics'],
+        )
+        self.assertIn('Age-conditioned AUROC=', output.getvalue())
 
     def test_outer_fold_uses_only_its_own_inner_search_parameters(self):
         features = np.arange(16, dtype=np.float32).reshape(8, 2)

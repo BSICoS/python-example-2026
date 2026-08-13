@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, average_precision_score, f1_score, p
 from sklearn.model_selection import LeaveOneGroupOut, RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 
-from .metrics import resolve_search_scoring
+from .metrics import compute_age_conditioned_auroc, resolve_search_scoring
 
 
 def normalize_site_group(site_id):
@@ -165,6 +165,7 @@ class EnsembleCrossValidator:
             consensus_params=consensus,
             labels=labels,
             oof_probabilities=oof_probabilities,
+            ages=self._get_ages_in_years(features),
             best_params_per_fold=selected_params_per_fold,
             fold_metrics=fold_metrics,
             metadata={
@@ -228,6 +229,7 @@ class EnsembleCrossValidator:
             consensus_params=consensus,
             labels=labels,
             oof_probabilities=oof_probabilities,
+            ages=self._get_ages_in_years(features),
             best_params_per_fold=selected_params_per_fold,
             fold_metrics=fold_metrics,
             metadata={
@@ -355,6 +357,7 @@ class EnsembleCrossValidator:
                 y_val,
                 fold_probabilities,
                 threshold=self.default_threshold,
+                ages=self._get_ages_in_years(X_val),
             )
             extra_fields = {} if extra_metric_fields is None else extra_metric_fields(split)
             fold_metric_row = {
@@ -369,7 +372,7 @@ class EnsembleCrossValidator:
 
         return fold_metrics, oof_probabilities
     
-    def _finalize_result(self, consensus_params, labels, oof_probabilities, best_params_per_fold, fold_metrics, metadata):
+    def _finalize_result(self, consensus_params, labels, ages, oof_probabilities, best_params_per_fold, fold_metrics, metadata):
         consensus = dict(consensus_params or {})
 
         fold_metric_summary = self._summarize_metrics(fold_metrics)
@@ -379,6 +382,7 @@ class EnsembleCrossValidator:
             labels,
             oof_probabilities,
             threshold=self.default_threshold,
+            ages=ages,
         )
         self._print_metrics("  OOF metrics before calibration:", oof_default_metrics)
 
@@ -387,6 +391,7 @@ class EnsembleCrossValidator:
             labels,
             oof_probabilities,
             threshold=threshold,
+            ages=ages,
         )
         self._print_metrics("  OOF metrics after calibration:", oof_calibrated_metrics)
 
@@ -502,15 +507,22 @@ class EnsembleCrossValidator:
             return np.nan
         return float(average_precision_score(labels, probabilities, pos_label=1))
 
-    def _compute_evaluation_metrics(self, labels, probabilities, threshold):
+    def _compute_evaluation_metrics(self, labels, probabilities, threshold, ages=None):
         labels = np.asarray(labels, dtype=np.int32)
         probabilities = np.asarray(probabilities, dtype=np.float32)
         predictions = (probabilities >= threshold).astype(np.int32)
+
+        age_conditioned_auroc = (
+            np.nan
+            if ages is None
+            else compute_age_conditioned_auroc(labels, probabilities, ages)
+        )
 
         return {
             'threshold': float(threshold),
             'auroc': self._safe_auroc(labels, probabilities),
             'auprc': self._safe_auprc(labels, probabilities),
+            'age_conditioned_auroc': age_conditioned_auroc,
             'accuracy': float(accuracy_score(labels, predictions)),
             'f1': float(f1_score(labels, predictions, zero_division=0)),
             'precision': float(precision_score(labels, predictions, zero_division=0)),
@@ -519,7 +531,7 @@ class EnsembleCrossValidator:
 
     def _summarize_metrics(self, metric_rows):
         summary = {}
-        metric_names = ('auroc', 'auprc', 'accuracy', 'f1', 'precision', 'recall')
+        metric_names = ('age_conditioned_auroc', 'auroc', 'auprc', 'accuracy', 'f1', 'precision', 'recall')
 
         for metric_name in metric_names:
             metric_values = np.asarray([row[metric_name] for row in metric_rows], dtype=np.float32)
@@ -547,9 +559,21 @@ class EnsembleCrossValidator:
     def _format_metric_value(self, value):
         return 'nan' if value is None or not np.isfinite(value) else f'{value:.3f}'
 
+    def _get_ages_in_years(self, features):
+        if self.search_age_feature_index is None:
+            return None
+
+        transformed_ages = np.asarray(features)[:, int(self.search_age_feature_index)]
+        return (
+            np.asarray(transformed_ages, dtype=float).reshape(-1)
+            * self.search_age_feature_scale
+            + self.search_age_feature_offset
+        )
+
     def _print_metrics(self, prefix, metrics):
         print(
             f"{prefix} AUROC={self._format_metric_value(metrics['auroc'])}, "
+            f"Age-conditioned AUROC={self._format_metric_value(metrics['age_conditioned_auroc'])}, "
             f"AUPRC={self._format_metric_value(metrics['auprc'])}, "
             f"Accuracy={self._format_metric_value(metrics['accuracy'])}, "
             f"F1={self._format_metric_value(metrics['f1'])}, "
@@ -559,11 +583,14 @@ class EnsembleCrossValidator:
         )
 
     def _print_metric_summary(self, prefix, summary):
-        metric_names = ('auroc', 'auprc', 'accuracy', 'f1', 'precision', 'recall')
+        metric_names = ('age_conditioned_auroc', 'auroc', 'auprc', 'accuracy', 'f1', 'precision', 'recall')
         parts = []
+        metric_labels = {
+            'age_conditioned_auroc': 'Age-conditioned AUROC',
+        }
         for metric_name in metric_names:
             metric_summary = summary.get(metric_name, {})
             mean_value = self._format_metric_value(metric_summary.get('mean'))
             std_value = self._format_metric_value(metric_summary.get('std'))
-            parts.append(f"{metric_name.upper()}={mean_value} +/- {std_value}")
+            parts.append(f"{metric_labels.get(metric_name, metric_name.upper())}={mean_value} +/- {std_value}")
         print(f"{prefix} {', '.join(parts)}")
