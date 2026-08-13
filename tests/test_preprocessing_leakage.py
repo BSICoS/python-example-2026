@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 from sklearn.base import clone
 
-from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator
+from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator, FoldSplit
 from src.pipeline.preprocessing import CorrelationAwarePreprocessor
 
 
@@ -87,6 +87,45 @@ class PreprocessingLeakageTests(unittest.TestCase):
 
         self.assertFalse(result.metrics['skipped'])
         self.assertEqual(_RecordingPreprocessor.fitted_sample_counts, [4, 4])
+
+    def test_outer_fold_uses_only_its_own_inner_search_parameters(self):
+        features = np.arange(16, dtype=np.float32).reshape(8, 2)
+        labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
+        feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
+        split_plan = [
+            FoldSplit(1, np.array([0, 1, 2, 3]), np.array([4, 5, 6, 7]), 'first'),
+            FoldSplit(2, np.array([4, 5, 6, 7]), np.array([0, 1, 2, 3]), 'second'),
+        ]
+        fitted_params = []
+
+        def fit_ensemble(features, labels, indices, consensus_params=None):
+            fitted_params.append(dict(consensus_params))
+            return {}
+
+        runner = EnsembleCrossValidator(
+            config=CrossValidationConfig(search_scoring='roc_auc'),
+            param_dist={},
+            default_threshold=0.5,
+            build_preprocessor=lambda *args: None,
+            build_search_model=lambda fold_labels: object(),
+            fit_ensemble=fit_ensemble,
+            predict_probabilities=lambda bundle, fold_features: np.full(len(fold_features), 0.5),
+        )
+
+        with redirect_stdout(io.StringIO()):
+            runner._evaluate_with_fold_params(
+                split_plan,
+                features,
+                labels,
+                feature_indices,
+                modality_presence_indices=feature_indices,
+                selected_params_per_fold=[
+                    {'fold': 1, 'params': {'max_depth': 1}},
+                    {'fold': 2, 'params': {'max_depth': 2}},
+                ],
+            )
+
+        self.assertEqual(fitted_params, [{'max_depth': 1}, {'max_depth': 2}])
 
 
 if __name__ == '__main__':

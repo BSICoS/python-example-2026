@@ -149,14 +149,14 @@ class EnsembleCrossValidator:
             site_groups=site_groups,
             label_prefix='held-out hospital',
         )
-        fold_metrics, oof_probabilities = self._evaluate_with_fixed_params(
+        fold_metrics, oof_probabilities = self._evaluate_with_fold_params(
             split_plan,
             features,
             labels,
             feature_indices,
             modality_presence_indices,
             categorical_indices=categorical_indices,
-            consensus_params=consensus,
+            selected_params_per_fold=selected_params_per_fold,
             label_prefix='held-out hospital',
             extra_metric_fields=lambda split: {'held_out_site': split.label},
         )
@@ -213,14 +213,14 @@ class EnsembleCrossValidator:
             site_groups=None,
             label_prefix='random split',
         )
-        fold_metrics, oof_probabilities = self._evaluate_with_fixed_params(
+        fold_metrics, oof_probabilities = self._evaluate_with_fold_params(
             split_plan,
             features,
             labels,
             feature_indices,
             modality_presence_indices,
             categorical_indices=categorical_indices,
-            consensus_params=consensus,
+            selected_params_per_fold=selected_params_per_fold,
             label_prefix='random split',
         )
 
@@ -286,7 +286,7 @@ class EnsembleCrossValidator:
         print(f"  Consensus hyperparameters: {consensus}")
         return consensus, selected_params_per_fold
     
-    def _evaluate_with_fixed_params(
+    def _evaluate_with_fold_params(
         self,
         split_plan,
         features,
@@ -294,10 +294,22 @@ class EnsembleCrossValidator:
         feature_indices,
         modality_presence_indices,
         categorical_indices=None,
-        consensus_params=None,
+        selected_params_per_fold=None,
         label_prefix='fold',
         extra_metric_fields=None,
     ):
+        params_by_fold = {
+            int(item['fold']): dict(item['params'])
+            for item in (selected_params_per_fold or [])
+        }
+        missing_folds = [
+            int(split.fold_index)
+            for split in split_plan
+            if int(split.fold_index) not in params_by_fold
+        ]
+        if missing_folds:
+            raise ValueError(f'Missing selected hyperparameters for folds: {missing_folds}')
+
         oof_probabilities = np.zeros(len(labels), dtype=np.float32)
         fold_metrics = []
 
@@ -326,7 +338,7 @@ class EnsembleCrossValidator:
                 X_train_proc,
                 y_train,
                 remapped_feature_indices,
-                consensus_params=consensus_params,
+                consensus_params=params_by_fold[int(split.fold_index)],
             )
             fold_bundle = {
                 'models': fold_models,
