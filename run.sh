@@ -60,6 +60,21 @@ docker_cli() {
     MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*" docker "$@"
 }
 
+GPU_ARGS=()
+
+configure_gpu_args() {
+    if docker_cli run --rm --gpus all \
+        "$IMAGE_NAME" \
+        python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)" \
+        >/dev/null 2>&1; then
+        echo "CUDA GPU detected. Using GPU."
+        GPU_ARGS=(--gpus all)
+    else
+        echo "CUDA GPU not available. Using CPU."
+        GPU_ARGS=()
+    fi
+}
+
 evaluate_predictions() {
     local code_path="$1"
     local data_path="$2"
@@ -135,7 +150,9 @@ train_full() {
     ensure_directory "$model_full"
     ensure_directory "$feature_cache"
 
-    docker_cli run --rm \
+    configure_gpu_args
+
+    docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${full_data_docker}:/challenge/training_data:ro" \
         -v "${model_full_docker}:/challenge/model" \
         -v "${feature_cache_docker}:/challenge/.feature_cache" \
@@ -158,7 +175,9 @@ train_smoke() {
     ensure_directory "$model_smoke"
     ensure_directory "$feature_cache"
 
-    docker_cli run --rm \
+    configure_gpu_args
+
+    docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${smoke_data_docker}:/challenge/training_data:ro" \
         -v "${model_smoke_docker}:/challenge/model" \
         -v "${feature_cache_docker}:/challenge/.feature_cache" \
@@ -183,7 +202,9 @@ run_full() {
     ensure_directory "$out_full"
     ensure_directory "$feature_cache"
 
-    docker_cli run --rm \
+    configure_gpu_args
+
+    docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${run_data_docker}:/challenge/holdout_data:ro" \
         -v "${model_full_docker}:/challenge/model:ro" \
         -v "${out_full_docker}:/challenge/holdout_outputs" \
@@ -222,7 +243,9 @@ run_smoke() {
     ensure_directory "$out_smoke"
     ensure_directory "$feature_cache"
 
-    docker_cli run --rm \
+    configure_gpu_args
+
+    docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${smoke_data_docker}:/challenge/holdout_data:ro" \
         -v "${model_smoke_docker}:/challenge/model:ro" \
         -v "${out_smoke_docker}:/challenge/holdout_outputs" \
@@ -285,7 +308,9 @@ train_dev() {
 
     ensure_directory "$model_smoke"
 
-    docker_cli run --rm \
+    configure_gpu_args
+
+    docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${code_path_docker}:/challenge" \
         -v "${smoke_data_docker}:/challenge/data_smoke:ro" \
         "$IMAGE_NAME" \
@@ -304,7 +329,9 @@ run_dev() {
 
     ensure_directory "$out_smoke"
 
-    docker_cli run --rm \
+    configure_gpu_args
+
+    docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${code_path_docker}:/challenge" \
         -v "${smoke_data_docker}:/challenge/data_smoke:ro" \
         "$IMAGE_NAME" \

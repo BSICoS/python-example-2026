@@ -54,6 +54,21 @@ function Ensure-Directory($path) {
     }
 }
 
+function Get-DockerGpuArgs {
+    $null = docker run --rm --gpus all `
+        $IMAGE_NAME `
+        python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)" `
+        2>$null
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "CUDA GPU detected. Using GPU."
+        return @("--gpus", "all")
+    }
+
+    Write-Host "CUDA GPU not available. Using CPU."
+    return @()
+}
+
 function Invoke-Evaluation($DataPath, $OutputPath, $PrevalencePath, $Label) {
     Write-Host "Evaluating $Label predictions..."
     docker run --rm `
@@ -106,7 +121,8 @@ function Train-Full {
     Ensure-Directory $MODEL_FULL
     Ensure-Directory $FEATURE_CACHE
 
-    docker run --rm `
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
         -v "${FULL_DATA}:/challenge/training_data:ro" `
         -v "${MODEL_FULL}:/challenge/model" `
         -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
@@ -123,7 +139,8 @@ function Train-Smoke {
     Ensure-Directory $MODEL_SMOKE
     Ensure-Directory $FEATURE_CACHE
 
-    docker run --rm `
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
         -v "${SMOKE_DATA}:/challenge/training_data:ro" `
         -v "${MODEL_SMOKE}:/challenge/model" `
         -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
@@ -142,7 +159,8 @@ function Run-Full {
     Ensure-Directory $OUT_FULL
     Ensure-Directory $FEATURE_CACHE
 
-    docker run --rm `
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
         -v "${RUN_DATA}:/challenge/holdout_data:ro" `
         -v "${MODEL_FULL}:/challenge/model:ro" `
         -v "${OUT_FULL}:/challenge/holdout_outputs" `
@@ -168,7 +186,8 @@ function Run-Smoke {
     Ensure-Directory $OUT_SMOKE
     Ensure-Directory $FEATURE_CACHE
 
-    docker run --rm `
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
         -v "${SMOKE_DATA}:/challenge/holdout_data:ro" `
         -v "${MODEL_SMOKE}:/challenge/model:ro" `
         -v "${OUT_SMOKE}:/challenge/holdout_outputs" `
@@ -213,7 +232,8 @@ function Train-Dev {
 
     Ensure-Directory $MODEL_SMOKE
 
-    docker run --rm `
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
         -v "${CODE_PATH}:/challenge" `
         -v "${SMOKE_DATA}:/challenge/training_data:ro" `
         -v "${MODEL_SMOKE}:/challenge/model" `
@@ -231,7 +251,8 @@ function Run-Dev {
 
     Ensure-Directory $OUT_SMOKE
 
-    docker run --rm `
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
         -v "${CODE_PATH}:/challenge" `
         -v "${SMOKE_DATA}:/challenge/holdout_data:ro" `
         -v "${MODEL_SMOKE}:/challenge/model:ro" `
