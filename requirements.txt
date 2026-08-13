@@ -10,7 +10,7 @@ matplotlib==3.9.0
 
 # === DEPENDENCIAS PRINCIPALES PARA PROPHECG ===
 # Instalamos PyTorch 
-torch
+torch==2.13.0
 #torchvision
 #torchaudio
 
