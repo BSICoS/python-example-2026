@@ -5,6 +5,8 @@ import numpy as np
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import LeaveOneGroupOut, RandomizedSearchCV, StratifiedKFold
 
+from .metrics import resolve_search_scoring
+
 
 def normalize_site_group(site_id):
     site_text = str(site_id).strip().upper()
@@ -13,6 +15,7 @@ def normalize_site_group(site_id):
 
 @dataclass(frozen=True)
 class CrossValidationConfig:
+    search_scoring: str
     use_site_grouped_cv: bool = True
     optimize_hyperparameter_search: bool = False
     outer_random_splits: int = 5
@@ -46,6 +49,9 @@ class EnsembleCrossValidator:
         build_search_model: Callable[..., Any],
         fit_ensemble: Callable[..., Any],
         predict_probabilities: Callable[..., Any],
+        search_age_feature_index: Optional[int] = None,
+        search_age_feature_scale: float = 1.0,
+        search_age_feature_offset: float = 0.0,
     ):
         self.config = config
         self.param_dist = param_dist
@@ -54,6 +60,9 @@ class EnsembleCrossValidator:
         self.build_search_model = build_search_model
         self.fit_ensemble = fit_ensemble
         self.predict_probabilities = predict_probabilities
+        self.search_age_feature_index = search_age_feature_index
+        self.search_age_feature_scale = float(search_age_feature_scale)
+        self.search_age_feature_offset = float(search_age_feature_offset)
 
     def run(
         self,
@@ -386,6 +395,7 @@ class EnsembleCrossValidator:
             'skipped': False,
             **metadata,
             'hyperparameter_optimization_enabled': bool(self.config.optimize_hyperparameter_search),
+            'hyperparameter_search_scoring': self.config.search_scoring,
             'fixed_hyperparameters': dict(self.config.fixed_hyperparameters),
             'selected_params_per_fold': best_params_per_fold,
             'fold_metrics': fold_metrics,
@@ -404,11 +414,17 @@ class EnsembleCrossValidator:
         if inner_cv is None:
             return {}
 
+        scoring = resolve_search_scoring(
+            self.config.search_scoring,
+            age_feature_index=self.search_age_feature_index,
+            age_feature_scale=self.search_age_feature_scale,
+            age_feature_offset=self.search_age_feature_offset,
+        )
         search = RandomizedSearchCV(
             estimator=self.build_search_model(y_train),
             param_distributions=self.param_dist,
             n_iter=self.config.search_iterations,
-            scoring='roc_auc',
+            scoring=scoring,
             cv=inner_cv,
             random_state=self.config.random_state,
             n_jobs=-1,

@@ -21,6 +21,7 @@ OPTIMIZE_HYPERPARAMETER_SEARCH = True
 RANDOM_CV_N_SPLITS = 5
 CV_RANDOM_STATE = 42
 CV_SEARCH_ITERATIONS = 20
+CV_SEARCH_SCORING = 'age_conditioned_auroc'  # Opciones: 'age_conditioned_auroc' o 'roc_auc'
 DEFAULT_CV_HYPERPARAMETERS = {
     'max_depth': 3,
     'min_child_weight': 3,

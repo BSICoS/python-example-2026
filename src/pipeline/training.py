@@ -1031,6 +1031,7 @@ from helper_code import DEMOGRAPHICS_FILE, HEADERS, find_patients, load_label
 from .config import (
     CV_RANDOM_STATE,
     CV_SEARCH_ITERATIONS,
+    CV_SEARCH_SCORING,
     DEFAULT_CV_HYPERPARAMETERS,
     MAX_TRAIN_WORKERS,
     OPTIMIZE_HYPERPARAMETER_SEARCH,
@@ -1039,38 +1040,17 @@ from .config import (
 )
 from .cross_validation import CrossValidationConfig, EnsembleCrossValidator, normalize_site_group
 from .features import get_feature_group_indices, get_feature_names, get_or_create_record_feature_vector
+from .metrics import compute_age_conditioned_auroc as compute_auroc_age
 from .preprocessing import build_preprocessor, get_processed_feature_names, remap_feature_indices
 
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
 ENSEMBLE_MODALITIES = ('resp', 'eeg', 'ecg')
 
-# Métrica oficial de evaluación condicionada por edad
-def compute_auroc_age(labels, predictions, ages, gap=2):
-    m = len(labels)
-    n = len(predictions)
-    o = len(ages)
-    assert(m == n == o)
-
-    idx_pos = [i for i in range(m) if labels[i] == 1]
-    idx_neg = [i for i in range(m) if labels[i] == 0]
-    num_pos = len(idx_pos)
-    num_neg = len(idx_neg)
-    
-    numer = 0
-    denom = 0
-    for i in range(num_pos):
-        for j in range(num_neg):
-            if abs(ages[idx_pos[i]] - ages[idx_neg[j]]) <= gap:
-                if predictions[idx_pos[i]] > predictions[idx_neg[j]]:
-                    numer += 1
-                elif predictions[idx_pos[i]] == predictions[idx_neg[j]]:
-                    numer += 0.5
-                denom += 1
-    return numer / denom if denom > 0 else 0.0
-
-# Inicializamos la variable global
+# Context needed to evaluate the age-conditioned metric on scaled model inputs.
 AGE_FEATURE_INDEX = 0
+AGE_FEATURE_SCALE = 1.0
+AGE_FEATURE_OFFSET = 0.0
 
 
 def _custom_auroc_age_metric(preds, dtrain):
@@ -1083,6 +1063,7 @@ def _custom_auroc_age_metric(preds, dtrain):
   else:
     ages = data[:, AGE_FEATURE_INDEX].ravel()
 
+  ages = ages * AGE_FEATURE_SCALE + AGE_FEATURE_OFFSET
   score = compute_auroc_age(labels, preds, ages, gap=2)
   return 'auroc_age', score
 
@@ -1506,6 +1487,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         outer_random_splits=RANDOM_CV_N_SPLITS,
         random_state=CV_RANDOM_STATE,
         search_iterations=CV_SEARCH_ITERATIONS,
+        search_scoring=CV_SEARCH_SCORING,
         fixed_hyperparameters=DEFAULT_CV_HYPERPARAMETERS,
     )
 
@@ -1514,6 +1496,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     print(f"  Hospital CV groups: {sorted(np.unique(site_groups).tolist())}")
     print(f"  CV strategy: {'grouped by hospital' if cv_config.use_site_grouped_cv else 'random stratified folds'}")
     print(f"  Hyperparameter search: {'enabled' if cv_config.optimize_hyperparameter_search else 'disabled'}")
+    print(f"  Hyperparameter search scoring: {cv_config.search_scoring}")
     
     # 1. AJUSTE GLOBAL ÚNICO: Ajustamos el preprocesador de correlación una sola vez AQUÍ afuera
     print("\n[INFO] Fijando variables de forma global antes del CV...")
@@ -1531,13 +1514,23 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     selected_raw_feature_indices = np.concatenate([real_selected_num_indices, preprocessor.categorical_indices]).astype(np.int32)
     
     print(f"Correlation selector: kept {len(processed_feature_names)}/{len(feature_names)} features fijas para todo el experimento.")
-    global AGE_FEATURE_INDEX
-    AGE_FEATURE_INDEX = 0  # Valor por defecto
-    for idx, name in enumerate(processed_feature_names):
-      if 'age' in name.lower():
-        AGE_FEATURE_INDEX = idx
-        print(f"--> [INFO] Variable 'Age' encontrada en el índice: {idx}")
-        break
+    global AGE_FEATURE_INDEX, AGE_FEATURE_SCALE, AGE_FEATURE_OFFSET
+    if 'Age' not in processed_feature_names:
+        raise ValueError("The 'Age' feature is required for age-conditioned AUROC scoring.")
+    raw_age_feature_index = feature_names.index('Age')
+    AGE_FEATURE_INDEX = processed_feature_names.index('Age')
+    numerical_age_positions = np.flatnonzero(
+        preprocessor._numerical_indices == raw_age_feature_index
+    )
+    if numerical_age_positions.size != 1:
+        raise ValueError("Could not recover the scaling parameters for the 'Age' feature.")
+    numerical_age_position = int(numerical_age_positions[0])
+    AGE_FEATURE_SCALE = float(preprocessor.scaler.scale_[numerical_age_position])
+    AGE_FEATURE_OFFSET = float(preprocessor.scaler.mean_[numerical_age_position])
+    print(
+        f"--> [INFO] Age scaling: scale={AGE_FEATURE_SCALE:.6g}, "
+        f"mean={AGE_FEATURE_OFFSET:.6g}"
+    )
 
     # Build demographic-aware combined feature indices
     combined_indices = _get_combined_model_indices(selected_feature_indices)
@@ -1551,6 +1544,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         build_search_model=_build_search_model,
         fit_ensemble=_fit_ensemble,
         predict_probabilities=predict_ensemble_probabilities,
+        search_age_feature_index=AGE_FEATURE_INDEX,
+        search_age_feature_scale=AGE_FEATURE_SCALE,
+        search_age_feature_offset=AGE_FEATURE_OFFSET,
     )
 
     # --- Step 1: Nested CV para calibración con variables 100% fijas ---
