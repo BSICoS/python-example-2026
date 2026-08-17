@@ -7,15 +7,8 @@ from scipy.signal import butter, filtfilt, find_peaks
 
 @dataclass(frozen=True)
 class PanTompkinsTrace:
-    """Intermediate arrays from the legacy detector used by the viewer."""
+    """Final outputs retained by the temporary ECG viewer."""
 
-    ecg_centered: np.ndarray
-    ecg_bandpassed: np.ndarray
-    derivative: np.ndarray
-    derivative_squared: np.ndarray
-    envelope: np.ndarray
-    candidate_locations: np.ndarray
-    unrefined_r_locations: np.ndarray
     r_amplitudes: np.ndarray
     r_locations: np.ndarray
     delay: int
@@ -228,13 +221,6 @@ def pan_tompkins(
         refined_r_amplitudes = np.array([], dtype=float)
 
     trace = PanTompkinsTrace(
-        ecg_centered=np.asarray(ecg, dtype=float),
-        ecg_bandpassed=np.asarray(ecg_h, dtype=float),
-        derivative=np.asarray(ecg_d, dtype=float),
-        derivative_squared=np.asarray(ecg_s, dtype=float),
-        envelope=np.asarray(ecg_m, dtype=float),
-        candidate_locations=np.asarray(locs, dtype=int),
-        unrefined_r_locations=unrefined_r_locations,
         r_amplitudes=np.asarray(refined_r_amplitudes, dtype=float),
         r_locations=np.asarray(refined_r_locations, dtype=int),
         delay=delay,

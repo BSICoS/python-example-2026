@@ -2,12 +2,15 @@ from unittest.mock import patch
 
 import numpy as np
 from biosigpy.hrv import removefp, tdmetrics
-from biosigpy.tools import snap_to_peak
+from biosigpy.tools import medfilt_threshold, snap_to_peak
 
 from src.lib import ecg_features, ecg_inspection
 from src.lib.ecg_peak_detection import pan_tompkins
 
-from src.ecg_processing import ECG_SEGMENT_FEATURE_NAMES
+from src.ecg_processing import (
+    ECG_SEGMENT_FEATURE_LENGTH,
+    ECG_SEGMENT_FEATURE_NAMES,
+)
 from src.lib.ecg_hrv_features import compute_time_domain_hrv
 
 
@@ -26,40 +29,66 @@ def _synthetic_ecg(duration_seconds=300, fs=200):
     return ecg
 
 
-def test_removed_fp_feature_uses_its_actual_semantics():
-    assert ECG_SEGMENT_FEATURE_NAMES[7] == "REMOVED_FP"
+def test_removed_rr_feature_uses_its_actual_semantics():
+    assert ECG_SEGMENT_FEATURE_NAMES[15] == "REMOVED_RR_PERCENTAGE"
     assert "ECTOPIC" not in ECG_SEGMENT_FEATURE_NAMES
+    assert "REMOVED_FP" not in ECG_SEGMENT_FEATURE_NAMES
+    assert {"MHR", "PNN50"}.issubset(
+        ECG_SEGMENT_FEATURE_NAMES
+    )
+    assert "SDSD" not in ECG_SEGMENT_FEATURE_NAMES
+    assert "HF" not in ECG_SEGMENT_FEATURE_NAMES
+    assert "ECGage" in ECG_SEGMENT_FEATURE_NAMES
+    assert {
+        "LF",
+        "HF_RESP",
+        "LFN_RESP",
+        "LFHF_RESP",
+        "URLF",
+        "RE",
+        "R",
+    }.issubset(ECG_SEGMENT_FEATURE_NAMES)
+    assert ECG_SEGMENT_FEATURE_LENGTH == 17
 
 
-def test_pan_tompkins_trace_preserves_legacy_outputs():
+def test_pan_tompkins_trace_preserves_refined_outputs():
     ecg = _synthetic_ecg(duration_seconds=20)
-    amplitudes, locations, delay = pan_tompkins(ecg, 200)
-    trace = pan_tompkins(ecg, 200, return_trace=True)
+    with patch(
+        "src.lib.ecg_peak_detection.snap_to_peak",
+        wraps=snap_to_peak,
+    ) as refine:
+        trace = pan_tompkins(ecg, 200, return_trace=True)
 
-    np.testing.assert_array_equal(trace.r_amplitudes, amplitudes)
-    np.testing.assert_array_equal(trace.r_locations, locations)
-    assert trace.delay == delay
-    assert trace.ecg_bandpassed.shape == ecg.shape
-    assert trace.derivative.shape == ecg.shape
-    assert trace.envelope.shape == ecg.shape
+    refine.assert_called_once()
+    snap_signal, approximate_locations, window_size = refine.call_args.args
     expected_locations = snap_to_peak(
-        trace.ecg_centered,
-        trace.unrefined_r_locations.astype(float) + 1.0,
-        20.0,
+        snap_signal,
+        approximate_locations,
+        window_size,
     ) - 1.0
     expected_locations = np.unique(np.sort(expected_locations.astype(int)))
     np.testing.assert_array_equal(trace.r_locations, expected_locations)
     assert np.all(np.diff(trace.r_locations) > 0)
-    np.testing.assert_array_equal(
-        trace.r_amplitudes,
-        trace.ecg_centered[trace.r_locations],
-    )
+
+    amplitudes, locations, delay = pan_tompkins(ecg, 200)
+    np.testing.assert_array_equal(trace.r_amplitudes, amplitudes)
+    np.testing.assert_array_equal(trace.r_locations, locations)
+    assert trace.delay == delay
 
 
 def test_time_domain_flow_matches_biosigpy_without_fillgaps():
     raw_events = np.array([0.0, 1.0, 2.0, 2.2, 3.0, 4.0, 5.0])
     expected_events = removefp(raw_events)
-    expected_metrics = tdmetrics(np.diff(expected_events))
+    intervals_after_removefp = np.diff(expected_events)
+    threshold = medfilt_threshold(
+        intervals_after_removefp,
+        50,
+        1.5,
+        1.5,
+    )
+    expected_outliers = intervals_after_removefp > threshold
+    expected_intervals = intervals_after_removefp[~expected_outliers]
+    expected_metrics = tdmetrics(expected_intervals)
 
     actual = compute_time_domain_hrv(raw_events, 200)
 
@@ -68,10 +97,18 @@ def test_time_domain_flow_matches_biosigpy_without_fillgaps():
         expected_events,
     )
     np.testing.assert_array_equal(
-        actual.intervals,
-        np.diff(expected_events),
+        actual.intervals_after_removefp,
+        intervals_after_removefp,
     )
-    assert actual.removed_count == 1
+    np.testing.assert_array_equal(
+        actual.interval_outlier_mask,
+        expected_outliers,
+    )
+    np.testing.assert_array_equal(actual.intervals, expected_intervals)
+    assert actual.removed_fp_count == 1
+    assert actual.interval_outlier_count == 0
+    assert actual.removed_rr_count == 1
+    assert actual.removed_rr_percentage == 100.0 / 6.0
     assert actual.removed_detection_mask.tolist() == [
         False,
         False,
@@ -81,26 +118,46 @@ def test_time_domain_flow_matches_biosigpy_without_fillgaps():
         False,
         False,
     ]
+    assert actual.metrics["MHR"] == expected_metrics["mhr"]
     assert actual.metrics["SDNN"] == expected_metrics["sdnn"]
     assert actual.metrics["RMSSD"] == expected_metrics["rmssd"]
+    assert actual.metrics["PNN50"] == expected_metrics["pnn50"]
+
+
+def test_time_domain_flow_excludes_median_threshold_outliers():
+    intervals = np.ones(25)
+    intervals[12] = 2.0
+    event_times = np.concatenate(([0.0], np.cumsum(intervals)))
+    threshold = medfilt_threshold(intervals, 50, 1.5, 1.5)
+    expected_outliers = intervals > threshold
+    expected_intervals = intervals[~expected_outliers]
+
+    with patch(
+        "src.lib.ecg_hrv_features.removefp",
+        return_value=event_times,
+    ):
+        actual = compute_time_domain_hrv(event_times, 200)
+
+    np.testing.assert_array_equal(
+        actual.interval_outlier_mask,
+        expected_outliers,
+    )
+    np.testing.assert_array_equal(actual.intervals, expected_intervals)
+    assert actual.removed_fp_count == 0
+    assert actual.interval_outlier_count == 1
+    assert actual.removed_rr_count == 1
+    assert actual.removed_rr_percentage == 4.0
+    assert actual.metrics["SDNN"] == tdmetrics(expected_intervals)["sdnn"]
 
 
 def test_inspection_trace_matches_current_feature_vector():
     ecg = _synthetic_ecg()
-    with (
-        patch.object(
-            ecg_features,
-            "compute_ecgage",
-            return_value=42.0,
-        ),
-        patch.object(
-            ecg_inspection,
-            "compute_ecgage",
-            return_value=42.0,
-        ),
-    ):
-        expected = ecg_features.compute_ecg_features(ecg, 200, 9)
-        trace = ecg_inspection.inspect_current_ecg_features(ecg, 200, 9)
+    expected = ecg_features.compute_ecg_features(
+        ecg, 200, ECG_SEGMENT_FEATURE_LENGTH
+    )
+    trace = ecg_inspection.inspect_current_ecg_features(
+        ecg, 200, ECG_SEGMENT_FEATURE_LENGTH
+    )
 
     assert trace.failure_reason is None
     assert trace.features is not None
@@ -111,6 +168,9 @@ def test_inspection_trace_matches_current_feature_vector():
         == trace.detector.r_locations.size
     )
     assert (
-        trace.cleaned_intervals.size
+        trace.intervals_after_removefp.size
         == max(0, trace.cleaned_event_times.size - 1)
+    )
+    assert trace.cleaned_intervals.size == np.count_nonzero(
+        ~trace.interval_outlier_mask
     )

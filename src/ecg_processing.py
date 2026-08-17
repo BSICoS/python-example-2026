@@ -1,6 +1,7 @@
 from .lib.ecg_features import compute_ecg_features
 import numpy as np
 from src.common.channel_utils import normalize_channel_label
+from src.resp_processing import select_best_respiration_signal
 
 ECG_KEYWORDS = ['ecg', 'ekg']
 
@@ -9,11 +10,19 @@ ECG_SEGMENT_FEATURE_NAMES = [
     "PNNLS",
     "PNNSS",
     "AVNN",
+    "MHR",
     "SDNN",
     "RMSSD",
-    "HF",
-    "REMOVED_FP",
-    "ECGage"
+    "PNN50",
+    "LF",
+    "HF_RESP",
+    "LFN_RESP",
+    "LFHF_RESP",
+    "URLF",
+    "RE",
+    "R",
+    "REMOVED_RR_PERCENTAGE",
+    "ECGage",
 ]
 ECG_SEGMENT_FEATURE_LENGTH = len(ECG_SEGMENT_FEATURE_NAMES)
 ECG_FEATURE_NAMES = ECG_SEGMENT_FEATURE_NAMES
@@ -44,8 +53,28 @@ def processECG(physiological_data, physiological_fs, csv_path):
     if ecg_signal.size == 0:
         return results
 
+    selected_respiration = select_best_respiration_signal(
+        physiological_data,
+        physiological_fs,
+        csv_path,
+    )
+
     try:
-        values = compute_ecg_features(ecg_signal, fs, ECG_SEGMENT_FEATURE_LENGTH)
+        values = compute_ecg_features(
+            ecg_signal,
+            fs,
+            ECG_SEGMENT_FEATURE_LENGTH,
+            respiration_signal=(
+                selected_respiration.resampled_signal
+                if selected_respiration is not None
+                else None
+            ),
+            respiration_sampling_frequency=(
+                selected_respiration.resampled_frequency
+                if selected_respiration is not None
+                else None
+            ),
+        )
 
         if values is None or len(values) == 0:
             return results

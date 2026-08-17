@@ -2,12 +2,15 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src import ecg_processing
+
 from src.lib.ecg_quality import (
     compute_ecg_amplitude_spread_ratio,
     evaluate_ecg_segment_quality,
 )
 from src.pipeline.config import DEFAULT_CSV_PATH
 from src.resp_processing import (
+    SelectedRespiration,
     processResp,
     select_best_respiration_signal,
 )
@@ -106,3 +109,40 @@ def test_recognized_respiration_uses_feature_pipeline_quality():
     assert np.isclose(selection.quality, 0.8)
     assert np.isclose(selection.peakedness, 1.5)
     assert np.isclose(features[1], 1.5)
+
+
+def test_process_ecg_passes_only_the_selected_respiration_to_hrv():
+    selected = SelectedRespiration(
+        label="CHEST",
+        group="Chest",
+        signal=np.ones(3000),
+        sampling_frequency=10.0,
+        resampled_signal=np.arange(7500, dtype=float),
+        resampled_frequency=25.0,
+        quality=1.0,
+        peakedness=1.0,
+    )
+    expected = np.arange(
+        ecg_processing.ECG_SEGMENT_FEATURE_LENGTH, dtype=np.float32
+    )
+    with patch.object(
+        ecg_processing,
+        "select_best_respiration_signal",
+        return_value=selected,
+    ), patch.object(
+        ecg_processing,
+        "compute_ecg_features",
+        return_value=expected,
+    ) as compute:
+        actual = ecg_processing.processECG(
+            {"ECG": np.ones(60000), "C-FLOW": np.ones(3000)},
+            {"ECG": 200, "C-FLOW": 10},
+            DEFAULT_CSV_PATH,
+        )
+
+    np.testing.assert_array_equal(actual, expected)
+    assert (
+        compute.call_args.kwargs["respiration_signal"]
+        is selected.resampled_signal
+    )
+    assert compute.call_args.kwargs["respiration_sampling_frequency"] == 25.0

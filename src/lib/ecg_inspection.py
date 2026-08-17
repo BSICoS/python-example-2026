@@ -12,8 +12,13 @@ import numpy as np
 from scipy.signal import butter, filtfilt, resample
 
 from .ecg_age import compute_ecgage
+from .ecg_features import FD_METRIC_NAMES
+from .ecg_frequency_features import (
+    FrequencyDomainHrvResult,
+    compute_frequency_domain_hrv,
+)
 
-from .ecg_hrv_features import compute_legacy_hf, compute_time_domain_hrv
+from .ecg_hrv_features import compute_time_domain_hrv
 from .ecg_peak_detection import PanTompkinsTrace, pan_tompkins
 from .ecg_quality import (
     EcgSegmentQuality,
@@ -48,10 +53,14 @@ class CurrentEcgTrace:
     cleaned_event_times: np.ndarray = field(default_factory=_empty_float_array)
     removed_detection_mask: np.ndarray = field(default_factory=_empty_bool_array)
     raw_intervals: np.ndarray = field(default_factory=_empty_float_array)
+    intervals_after_removefp: np.ndarray = field(default_factory=_empty_float_array)
+    interval_outlier_mask: np.ndarray = field(default_factory=_empty_bool_array)
     cleaned_intervals: np.ndarray = field(default_factory=_empty_float_array)
-    removed_percentage: float = np.nan
+    removed_rr_percentage: float = np.nan
     quality: EcgSegmentQuality | None = None
     metrics: dict[str, float] = field(default_factory=dict)
+    frequency_domain: FrequencyDomainHrvResult | None = None
+    frequency_failure_reason: str | None = None
     features: np.ndarray | None = None
     failure_reason: str | None = None
 
@@ -60,6 +69,9 @@ def inspect_current_ecg_features(
     ecg_signal,
     fs,
     ecg_feature_length,
+    *,
+    respiration_signal=None,
+    respiration_sampling_frequency=None,
 ) -> CurrentEcgTrace:
     """Run the current algorithm while retaining each intermediate array."""
 
@@ -149,8 +161,10 @@ def inspect_current_ecg_features(
     trace.cleaned_event_times = time_domain.cleaned_event_times
     trace.removed_detection_mask = time_domain.removed_detection_mask
     trace.raw_intervals = np.diff(time_domain.raw_event_times)
+    trace.intervals_after_removefp = time_domain.intervals_after_removefp
+    trace.interval_outlier_mask = time_domain.interval_outlier_mask
     trace.cleaned_intervals = time_domain.intervals
-    trace.removed_percentage = time_domain.removed_percentage
+    trace.removed_rr_percentage = time_domain.removed_rr_percentage
     amplitude_spread_ratio = compute_ecg_amplitude_spread_ratio(
         trace.lowpass_filtered_signal,
         fs,
@@ -167,7 +181,18 @@ def inspect_current_ecg_features(
         )
 
     trace.metrics = time_domain.metrics.copy()
-    trace.metrics["HF"] = compute_legacy_hf(time_domain.intervals)
+    trace.metrics.update({name: np.nan for name in FD_METRIC_NAMES})
+    try:
+        trace.frequency_domain = compute_frequency_domain_hrv(
+            time_domain.cleaned_event_times,
+            trace.lowpass_filtered_signal,
+            fs,
+            respiration_signal=respiration_signal,
+            respiration_sampling_frequency=respiration_sampling_frequency,
+        )
+        trace.metrics.update(trace.frequency_domain.metrics)
+    except (TypeError, ValueError, np.linalg.LinAlgError) as error:
+        trace.frequency_failure_reason = str(error)
     try:
         ecg_age = compute_ecgage(trace.lowpass_filtered_signal)
     except Exception as error:
@@ -180,10 +205,18 @@ def inspect_current_ecg_features(
             trace.metrics["PNNLS"],
             trace.metrics["PNNSS"],
             trace.metrics["AVNN"],
+            trace.metrics["MHR"],
             trace.metrics["SDNN"],
             trace.metrics["RMSSD"],
-            trace.metrics["HF"],
-            trace.removed_percentage,
+            trace.metrics["PNN50"],
+            trace.metrics["LF"],
+            trace.metrics["HF_RESP"],
+            trace.metrics["LFN_RESP"],
+            trace.metrics["LFHF_RESP"],
+            trace.metrics["URLF"],
+            trace.metrics["RE"],
+            trace.metrics["R"],
+            trace.removed_rr_percentage,
             ecg_age,
         ],
         dtype=np.float32,

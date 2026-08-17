@@ -142,7 +142,7 @@ def preprocess_multimodal_data( df_model):
                         'F3-M2_kurtosis_Delta','F4-M1_kurtosis_Delta','C3-M2_kurtosis_Sigma','C4-M1_kurtosis_Sigma','F3-M2_kurtosis_Sigma','F4-M1_kurtosis_Sigma',
                         'C3-M2_kurtosis_Theta','C4-M1_kurtosis_Theta','F3-M2_kurtosis_Theta','F4-M1_kurtosis_Theta','C3-M2_variability_Delta',
                         'C4-M1_variability_Delta','F3-M2_variability_Delta','F4-M1_variability_Delta','PIP_med','PIP_std','PNNSS_med',
-                        'PNNSS_std','AVNN_med','AVNN_std','SDNN_med','SDNN_std','RMSSD_std','HF_med','HF_std','REMOVED_FP_med','REMOVED_FP_std']]
+                        'PNNSS_std','AVNN_med','AVNN_std','MHR_med','MHR_std','SDNN_med','SDNN_std','RMSSD_med','RMSSD_std','PNN50_med','PNN50_std','LF_med','LF_std','HF_RESP_med','HF_RESP_std','LFN_RESP_med','LFN_RESP_std','LFHF_RESP_med','LFHF_RESP_std','URLF_med','URLF_std','RE_med','RE_std','R_med','R_std','REMOVED_RR_PERCENTAGE_med','REMOVED_RR_PERCENTAGE_std']]
 
 
     # Ajusta el tipo de dato, todas deben ser numericas excepto Sex, Label y ID. Sex y label tendría que ser logical? o categorical?
@@ -193,7 +193,7 @@ def prepare_multimodal_data(dddf, testsize=0.1):
         for col in feature_names])
     eeg_mask = np.array([ any(k in col for k in ["Age","Sex","C3-M2", "C4-M1", "F3-M2", "F4-M1"])
         for col in feature_names])
-    ecg_mask = np.array([ any(k in col for k in ["Age","Sex","PIP_", "PNNSS_", "AVNN_", "SDNN_", "RMSSD_", "HF_", "REMOVED_FP_"])
+    ecg_mask = np.array([ any(k in col for k in ["Age","Sex","PIP_", "PNNSS_", "AVNN_", "MHR_", "SDNN_", "RMSSD_", "PNN50_", "LF_", "HF_RESP_", "LFN_RESP_", "LFHF_RESP_", "URLF_", "RE_", "R_", "REMOVED_RR_PERCENTAGE_"])
         for col in feature_names])
 
     # Subsets finales

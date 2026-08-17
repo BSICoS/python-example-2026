@@ -52,16 +52,16 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from src.ecg_processing import ECG_SEGMENT_FEATURE_LENGTH, ECG_SEGMENT_FEATURE_NAMES
+from src.ecg_processing import ECG_SEGMENT_FEATURE_LENGTH
 from src.lib.ecg_inspection import CurrentEcgTrace, inspect_current_ecg_features
+from src.resp_processing import (
+    get_respiration_feature_group,
+    select_best_respiration_signal,
+)
 from src.pipeline.config import (
     DEFAULT_CSV_PATH,
     SEGMENT_DURATION_SECONDS,
     SEGMENT_STRIDE_SECONDS,
-)
-from src.resp_processing import (
-    get_respiration_feature_group,
-    select_best_respiration_signal,
 )
 
 
@@ -170,17 +170,6 @@ def _slice_channel(channel: SignalChannel, start_seconds: float) -> np.ndarray:
     return np.asarray(channel.data[start:stop], dtype=float)
 
 
-def _scaled(signal: np.ndarray) -> np.ndarray:
-    finite = signal[np.isfinite(signal)]
-    if finite.size == 0:
-        return np.full(signal.shape, np.nan, dtype=float)
-    center = np.median(finite)
-    scale = np.percentile(np.abs(finite - center), 95)
-    if not np.isfinite(scale) or scale == 0:
-        scale = 1.0
-    return (signal - center) / scale
-
-
 class EcgInspectionViewer:
     def __init__(
         self,
@@ -199,16 +188,18 @@ class EcgInspectionViewer:
         self.figure, axes = plt.subplots(
             6,
             1,
-            figsize=(16, 12),
-            gridspec_kw={"height_ratios": (1.0, 1.0, 1.0, 1.0, 1.0, 0.8)},
+            figsize=(16, 15),
+            gridspec_kw={
+                "height_ratios": (2.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+            },
         )
         self.axes = list(axes)
         self.figure.subplots_adjust(
             left=0.22,
             right=0.98,
             top=0.95,
-            bottom=0.13,
-            hspace=0.42,
+            bottom=0.08,
+            hspace=0.48,
         )
 
         radio_axis = self.figure.add_axes((0.015, 0.56, 0.18, 0.34))
@@ -315,7 +306,7 @@ class EcgInspectionViewer:
         start, stop = value
         if stop <= start:
             return
-        for axis in self.axes[:5]:
+        for axis in self.axes[:2]:
             axis.set_xlim(start, stop)
         self.figure.canvas.draw_idle()
 
@@ -323,291 +314,398 @@ class EcgInspectionViewer:
         assert self.loaded_subject is not None
         start_seconds = self.loaded_subject.window_starts[self.window_index]
         ecg_window = _slice_channel(self.loaded_subject.ecg, start_seconds)
+        segment_data = {self.loaded_subject.ecg.label: ecg_window}
+        segment_fs = {
+            self.loaded_subject.ecg.label:
+            self.loaded_subject.ecg.sampling_frequency
+        }
+        for channel in self.loaded_subject.respiration_channels:
+            segment_data[channel.label] = _slice_channel(
+                channel, start_seconds
+            )
+            segment_fs[channel.label] = channel.sampling_frequency
+        selected_respiration = select_best_respiration_signal(
+            segment_data,
+            segment_fs,
+            DEFAULT_CSV_PATH,
+        )
         self.trace = inspect_current_ecg_features(
             ecg_window,
             self.loaded_subject.ecg.sampling_frequency,
             ECG_SEGMENT_FEATURE_LENGTH,
-        )
-
-        respiration_data = {
-            channel.label: _slice_channel(channel, start_seconds)
-            for channel in self.loaded_subject.respiration_channels
-        }
-        respiration_fs = {
-            channel.label: channel.sampling_frequency
-            for channel in self.loaded_subject.respiration_channels
-        }
-        selected_respiration = select_best_respiration_signal(
-            respiration_data,
-            respiration_fs,
-            DEFAULT_CSV_PATH,
+            respiration_signal=(
+                selected_respiration.resampled_signal
+                if selected_respiration is not None
+                else None
+            ),
+            respiration_sampling_frequency=(
+                selected_respiration.resampled_frequency
+                if selected_respiration is not None
+                else None
+            ),
         )
 
         for axis in self.axes:
             axis.clear()
             axis.grid(True, alpha=0.25)
 
-        raw_time = (
-            np.arange(ecg_window.size)
-            / self.loaded_subject.ecg.sampling_frequency
-        )
-        self.axes[0].plot(
-            raw_time,
-            _scaled(ecg_window),
-            color="black",
-            linewidth=0.8,
-            label="Raw ECG",
-        )
-        if selected_respiration is not None:
-            resp_time = (
-                np.arange(selected_respiration.signal.size)
-                / selected_respiration.sampling_frequency
+        quality = self.trace.quality
+        if quality is None:
+            quality_status = (
+                "REJECTED" if self.trace.failure_reason else "NOT EVALUATED"
             )
-            self.axes[0].plot(
-                resp_time,
-                _scaled(selected_respiration.signal),
-                color="tab:blue",
-                linewidth=0.8,
-                alpha=0.75,
-                label=(
-                    f"Resp: {selected_respiration.label} "
-                    f"({selected_respiration.group}, "
-                    f"quality {selected_respiration.quality:.3g})"
-                ),
+            quality_color = (
+                "tab:red" if self.trace.failure_reason else "0.4"
             )
         else:
-            self.axes[0].text(
-                0.99,
-                0.88,
-                "No eligible good respiration: sloperange fallback",
-                transform=self.axes[0].transAxes,
-                ha="right",
-                va="top",
-                color="tab:red",
+            quality_status = "ACCEPTED" if quality.is_valid else "REJECTED"
+            quality_color = (
+                "tab:green" if quality.is_valid else "tab:red"
             )
-        self.axes[0].set_ylabel("Scaled")
-        self.axes[0].set_title("1. Raw signals")
-        self.axes[0].legend(loc="upper left", ncols=2)
-
-        if self.trace.processed_fs is not None:
-            processed_time = (
-                np.arange(self.trace.resampled_signal.size)
-                / self.trace.processed_fs
-            )
-            filter_series = (
-                ("Resampled", self.trace.resampled_signal, "0.65"),
-                ("60 Hz notch", self.trace.notch_filtered_signal, "tab:blue"),
-                ("0.5 Hz high-pass", self.trace.highpass_filtered_signal, "tab:orange"),
-                ("50 Hz low-pass", self.trace.lowpass_filtered_signal, "tab:red"),
-            )
-            for label, signal, color in filter_series:
-                if signal.size:
-                    self.axes[1].plot(
-                        processed_time[: signal.size],
-                        _scaled(signal),
-                        linewidth=0.8,
-                        alpha=0.8,
-                        label=label,
-                        color=color,
-                    )
-            self.axes[1].legend(loc="upper left", ncols=4, fontsize=8)
-        self.axes[1].set_ylabel("Scaled")
-        self.axes[1].set_title("2. Legacy preprocessing filters")
 
         detector = self.trace.detector
-        if detector is not None:
-            detector_time = (
-                np.arange(detector.ecg_bandpassed.size)
-                / self.trace.processed_fs
-            )
-            self.axes[2].plot(
-                detector_time,
-                _scaled(detector.ecg_bandpassed),
-                label="5-12 Hz",
-                linewidth=0.8,
-            )
-            self.axes[2].plot(
-                detector_time,
-                _scaled(detector.derivative),
-                label="Derivative",
-                linewidth=0.7,
-            )
-            self.axes[2].plot(
-                detector_time,
-                _scaled(detector.envelope),
-                label="Integrated envelope",
-                linewidth=1.0,
-            )
-            self.axes[2].legend(loc="upper left", ncols=3, fontsize=8)
-            self.axes[2].set_ylabel("Scaled")
-            self.axes[2].set_title("3. Legacy Pan-Tompkins internal signals")
-
-            r_indices = detector.r_locations
-            r_times = r_indices / self.trace.processed_fs
-            detection_signal = detector.ecg_centered
-            self.axes[3].plot(
-                detector_time,
-                detection_signal,
+        if detector is not None and self.trace.processed_fs is not None:
+            sampling_frequency = self.trace.processed_fs
+            clean_signal = self.trace.lowpass_filtered_signal
+            clean_time = np.arange(clean_signal.size) / sampling_frequency
+            self.axes[0].plot(
+                clean_time,
+                clean_signal,
                 color="black",
                 linewidth=0.8,
+                label="Clean ECG",
             )
-            unrefined_indices = detector.unrefined_r_locations
-            valid_unrefined = (
-                (unrefined_indices >= 0)
-                & (unrefined_indices < detection_signal.size)
-            )
-            self.axes[3].scatter(
-                unrefined_indices[valid_unrefined]
-                / self.trace.processed_fs,
-                detection_signal[unrefined_indices[valid_unrefined]],
-                s=16,
-                facecolors="none",
-                edgecolors="tab:blue",
-                label="Before snap_to_peak",
-                zorder=2,
-            )
+
+            r_indices = detector.r_locations
+            r_times = r_indices / sampling_frequency
             valid_mask = (
                 (r_indices >= 0)
-                & (r_indices < detection_signal.size)
-            )
-            valid_indices = r_indices[valid_mask]
-            valid_times = r_times[valid_mask]
-            self.axes[3].scatter(
-                valid_times,
-                detection_signal[valid_indices],
-                s=18,
-                color="tab:red",
-                label=f"Refined R waves ({valid_indices.size})",
-                zorder=3,
+                & (r_indices < clean_signal.size)
             )
             removed_mask = (
                 self.trace.removed_detection_mask
                 if self.trace.removed_detection_mask.size == r_times.size
                 else np.zeros(r_times.size, dtype=bool)
             )
-            visible_removed = removed_mask & valid_mask
+            kept_mask = valid_mask & ~removed_mask
+            if np.any(kept_mask):
+                kept_indices = r_indices[kept_mask]
+                self.axes[0].scatter(
+                    r_times[kept_mask],
+                    clean_signal[kept_indices],
+                    s=18,
+                    color="tab:red",
+                    label=(
+                        "Refined R waves kept "
+                        f"({np.count_nonzero(kept_mask)})"
+                    ),
+                    zorder=3,
+                )
+            visible_removed = valid_mask & removed_mask
             if np.any(visible_removed):
                 removed_indices = r_indices[visible_removed]
-                self.axes[3].scatter(
+                self.axes[0].scatter(
                     r_times[visible_removed],
-                    detection_signal[removed_indices],
+                    clean_signal[removed_indices],
                     s=45,
                     color="tab:orange",
                     marker="x",
                     label=(
                         "Removed by removefp "
-                        f"({np.count_nonzero(removed_mask)})"
+                        f"({np.count_nonzero(visible_removed)})"
                     ),
                     zorder=4,
                 )
-            self.axes[3].legend(loc="upper left")
-            self.axes[3].set_ylabel("ECG")
-            self.axes[3].set_title("4. Legacy refined R-wave detections")
+
             if self.trace.raw_intervals.size:
                 raw_interval_times = r_times[
                     1 : 1 + self.trace.raw_intervals.size
                 ]
-                self.axes[4].plot(
+                self.axes[1].plot(
                     raw_interval_times,
                     self.trace.raw_intervals,
                     ".-",
                     color="0.55",
                     label="Raw RR",
                 )
-            if self.trace.cleaned_intervals.size:
+            if self.trace.intervals_after_removefp.size:
                 cleaned_interval_times = self.trace.cleaned_event_times[1:]
-                self.axes[4].plot(
+                intervals_used_for_td = (
+                    self.trace.intervals_after_removefp.copy()
+                )
+                intervals_used_for_td[
+                    self.trace.interval_outlier_mask
+                ] = np.nan
+                self.axes[1].plot(
                     cleaned_interval_times,
-                    self.trace.cleaned_intervals,
+                    intervals_used_for_td,
                     ".-",
                     color="tab:green",
-                    label="RR after removefp",
+                    label="RR used for TD metrics",
                 )
-            if (
-                self.trace.raw_intervals.size
-                or self.trace.cleaned_intervals.size
-            ):
-                self.axes[4].legend(loc="upper left", ncols=2, fontsize=8)
-        self.axes[4].set_ylabel("RR (s)")
-        self.axes[4].set_title("5. Biosigpy removefp (no fillgaps)")
-        self.axes[4].set_xlabel("Seconds inside the processing window")
-
-        quality = self.trace.quality
-        if quality is None:
-            quality_status = (
-                "REJECTED" if self.trace.failure_reason else "NOT EVALUATED"
-            )
-            quality_color = "tab:red" if self.trace.failure_reason else "0.4"
+                if np.any(self.trace.interval_outlier_mask):
+                    self.axes[1].scatter(
+                        cleaned_interval_times[
+                            self.trace.interval_outlier_mask
+                        ],
+                        self.trace.intervals_after_removefp[
+                            self.trace.interval_outlier_mask
+                        ],
+                        color="tab:orange",
+                        marker="x",
+                        s=45,
+                        label=(
+                            "Removed by medfilt_threshold "
+                            f"({np.count_nonzero(self.trace.interval_outlier_mask)})"
+                        ),
+                        zorder=4,
+                    )
         else:
-            quality_status = "ACCEPTED" if quality.is_valid else "REJECTED"
-            quality_color = "tab:green" if quality.is_valid else "tab:red"
+            self.axes[0].text(
+                0.5,
+                0.5,
+                "No valid cleaned ECG is available for this window.",
+                transform=self.axes[0].transAxes,
+                ha="center",
+                va="center",
+                color="tab:red",
+            )
 
-        metric_lines = [f"ECG QUALITY: {quality_status}"]
+        frequency_domain = self.trace.frequency_domain
+        if frequency_domain is not None:
+            interval_times = frequency_domain.filled_event_times[1:]
+            actual_intervals = np.diff(
+                frequency_domain.filled_event_times
+            )
+            resolved = np.isfinite(frequency_domain.filled_intervals)
+            self.axes[2].plot(
+                interval_times[resolved],
+                frequency_domain.filled_intervals[resolved],
+                ".-",
+                color="tab:blue",
+                label="RR after fillgaps",
+            )
+            if np.any(~resolved):
+                self.axes[2].scatter(
+                    interval_times[~resolved],
+                    actual_intervals[~resolved],
+                    marker="x",
+                    s=45,
+                    color="tab:red",
+                    label="Unresolved gap > 10 s",
+                    zorder=4,
+                )
+            selected_start = frequency_domain.selected_event_times[0]
+            selected_stop = frequency_domain.selected_event_times[-1]
+            self.axes[2].axvspan(
+                selected_start,
+                selected_stop,
+                color="tab:green",
+                alpha=0.12,
+                label="Longest continuous segment",
+            )
+
+            def standardize(values):
+                values = np.asarray(values, dtype=float)
+                scale = np.std(values)
+                if not np.isfinite(scale) or scale == 0:
+                    return values - np.mean(values)
+                return (values - np.mean(values)) / scale
+
+            self.axes[3].plot(
+                frequency_domain.sample_times,
+                standardize(frequency_domain.modulation),
+                color="black",
+                linewidth=0.8,
+                label="IPFM modulation",
+            )
+            self.axes[3].plot(
+                frequency_domain.sample_times,
+                standardize(frequency_domain.respiration),
+                color="tab:blue",
+                linewidth=0.8,
+                alpha=0.8,
+                label=(
+                    "Respiration: "
+                    f"{selected_respiration.label if selected_respiration is not None else 'sloperange'}"
+                ),
+            )
+
+            frequency_mask = frequency_domain.frequencies <= 1.0
+            hrv_spectrum = frequency_domain.spectrum.copy()
+            respiration_spectrum = (
+                frequency_domain.respiration_spectrum.copy()
+            )
+            hrv_max = np.max(hrv_spectrum)
+            respiration_max = np.max(respiration_spectrum)
+            if hrv_max > 0:
+                hrv_spectrum /= hrv_max
+            if respiration_max > 0:
+                respiration_spectrum /= respiration_max
+            self.axes[4].plot(
+                frequency_domain.frequencies[frequency_mask],
+                hrv_spectrum[frequency_mask],
+                color="black",
+                label="HRV PSD (normalized)",
+            )
+            self.axes[4].plot(
+                frequency_domain.frequencies[frequency_mask],
+                respiration_spectrum[frequency_mask],
+                color="tab:blue",
+                alpha=0.8,
+                label="Respiration PSD (normalized)",
+            )
+            self.axes[4].axvspan(
+                0.04, 0.15, color="tab:orange", alpha=0.15, label="LF"
+            )
+            self.axes[4].axvspan(
+                max(
+                    0.0,
+                    frequency_domain.respiration_frequency - 0.125,
+                ),
+                frequency_domain.respiration_frequency + 0.125,
+                color="tab:green",
+                alpha=0.12,
+                label="Respiration-centered HF",
+            )
+            self.axes[4].axvline(
+                frequency_domain.respiration_frequency,
+                color="tab:blue",
+                linestyle="--",
+                linewidth=1,
+            )
+
+            osp_mask = frequency_domain.related_frequencies <= 1.0
+            self.axes[5].plot(
+                frequency_domain.related_frequencies[osp_mask],
+                frequency_domain.related_spectrum[osp_mask],
+                color="tab:green",
+                label="Respiration-related PSD",
+            )
+            self.axes[5].plot(
+                frequency_domain.related_frequencies[osp_mask],
+                frequency_domain.unrelated_spectrum[osp_mask],
+                color="tab:purple",
+                label="Respiration-unrelated PSD",
+            )
+            self.axes[5].axvspan(
+                0.04,
+                0.15,
+                color="tab:orange",
+                alpha=0.15,
+                label="Unrelated LF integration",
+            )
+        else:
+            reason = (
+                self.trace.frequency_failure_reason
+                or "Frequency-domain processing was not available."
+            )
+            for axis in self.axes[2:]:
+                axis.text(
+                    0.5,
+                    0.5,
+                    reason,
+                    transform=axis.transAxes,
+                    ha="center",
+                    va="center",
+                    color="tab:red",
+                )
+        quality_lines = [f"ECG QUALITY: {quality_status}"]
         if quality is not None:
-            metric_lines.extend(
+            quality_lines.extend(
                 (
-                    f"R detections: {quality.raw_detection_count} raw -> "
-                    f"{quality.cleaned_detection_count} after removefp "
-                    f"[{quality.minimum_detections}, "
-                    f"{quality.maximum_detections}]",
-                    f"Removed detections: "
-                    f"{quality.removed_detection_count}/"
-                    f"{quality.raw_detection_count} "
-                    f"({quality.removed_fraction:.1%}; "
-                    f"maximum {quality.maximum_removed_fraction:.1%})",
-                    f"ECG amplitude spread: "
-                    f"{quality.amplitude_spread_ratio:.2f} "
+                    f"R detections: {quality.raw_detection_count} -> "
+                    f"{quality.cleaned_detection_count}",
+                    f"Removed FP: {quality.removed_fraction:.1%} "
+                    f"(maximum {quality.maximum_removed_fraction:.1%})",
+                    f"RR outliers: "
+                    f"{np.count_nonzero(self.trace.interval_outlier_mask)}/"
+                    f"{self.trace.intervals_after_removefp.size}",
+                    f"Total RR excluded: "
+                    f"{self.trace.removed_rr_percentage:.1f}%",
+                    f"Amplitude spread: {quality.amplitude_spread_ratio:.2f} "
                     f"(maximum "
                     f"{quality.maximum_amplitude_spread_ratio:.2f})",
                 )
             )
-        if self.trace.features is not None:
-            metric_lines.extend(
-                f"{name}: {value:.5g}"
-                for name, value in zip(
-                    ECG_SEGMENT_FEATURE_NAMES,
-                    self.trace.features,
-                )
-            )
-        metric_lines.extend(
-            (
-                f"Removed by removefp: "
-                f"{self.trace.removed_percentage:.2f}%",
-                "TD units: AVNN s; SDNN/RMSSD ms",
-            )
-        )
         if self.trace.failure_reason:
-            metric_lines.append(f"Diagnostic: {self.trace.failure_reason}")
-        self.axes[5].axis("off")
-        self.axes[5].text(
-            0.01,
-            0.98,
-            "\n".join(metric_lines),
-            transform=self.axes[5].transAxes,
+            quality_lines.append(self.trace.failure_reason)
+        self.axes[0].text(
+            0.99,
+            0.97,
+            "\n".join(quality_lines),
+            transform=self.axes[0].transAxes,
+            ha="right",
             va="top",
-            family="monospace",
-            fontsize=9,
-        )
-        self.axes[5].set_title(
-            "6. Current per-window feature values",
             color=quality_color,
+            fontsize=9,
+            bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "0.8"},
+            wrap=True,
         )
 
-        respiration_label = (
-            (
-                f"{selected_respiration.label}/"
-                f"{selected_respiration.group}"
-            )
-            if selected_respiration is not None
-            else "sloperange fallback"
+        for axis in self.axes:
+            handles, _ = axis.get_legend_handles_labels()
+            if handles:
+                axis.legend(loc="upper left", fontsize=8)
+
+        self.axes[0].set_ylabel("ECG")
+        self.axes[0].set_title(
+            "1. Clean ECG with refined R-wave detections"
         )
+        self.axes[1].set_ylabel("RR (s)")
+        self.axes[1].set_title("2. RR cleaning: removefp + medfilt_threshold")
+        self.axes[2].set_ylabel("RR (s)")
+        self.axes[2].set_title(
+            "3. FD preparation: fillgaps and longest segment without >10 s gaps"
+        )
+        self.axes[3].set_ylabel("Standardized")
+        self.axes[3].set_title("4. Evenly sampled IPFM and respiration")
+        self.axes[3].set_xlabel("Seconds inside the processing window")
+        self.axes[4].set_ylabel("Normalized PSD")
+        self.axes[4].set_title(
+            "5. Welch: 120 s Hamming windows, 50% overlap"
+        )
+        self.axes[4].set_xlabel("Frequency (Hz)")
+        self.axes[4].set_xlim(0.0, 1.0)
+        self.axes[5].set_ylabel("PSD")
+        self.axes[5].set_title("6. OSP-related and unrelated spectra")
+        self.axes[5].set_xlabel("Frequency (Hz)")
+        self.axes[5].set_xlim(0.0, 1.0)
+        if frequency_domain is not None:
+            selected_duration = (
+                frequency_domain.selected_event_times[-1]
+                - frequency_domain.selected_event_times[0]
+            )
+            respiration_label = (
+                selected_respiration.label
+                if selected_respiration is not None
+                else "sloperange"
+            )
+            self.axes[2].set_title(
+                "3. FD preparation: fillgaps maxgap=10 s | "
+                f"longest segment {selected_duration:.1f} s"
+            )
+            self.axes[3].set_title(
+                "4. Evenly sampled IPFM and respiration | "
+                f"source {respiration_label}"
+            )
+            self.axes[4].set_title(
+                "5. Welch: 120 s Hamming, 50% overlap | "
+                f"{frequency_domain.welch_window_count} windows"
+            )
+            self.axes[5].set_title(
+                "6. OSP spectra | "
+                f"UrLF={frequency_domain.metrics['URLF']:.4g}, "
+                f"Re={frequency_domain.metrics['RE']:.4g}, "
+                f"R={frequency_domain.metrics['R']:.3f}"
+            )
         self.figure.suptitle(
             f"{self.loaded_subject.record.subject_id} | "
-            f"window {self.window_index + 1}/{len(self.loaded_subject.window_starts)} "
+            f"window {self.window_index + 1}/"
+            f"{len(self.loaded_subject.window_starts)} "
             f"at {start_seconds / 60:.1f} min | "
             f"ECG {self.loaded_subject.ecg.label} "
             f"{self.loaded_subject.ecg.sampling_frequency:g} Hz | "
-            f"respiration {respiration_label} | "
             f"ECG quality {quality_status}",
             fontsize=12,
         )
