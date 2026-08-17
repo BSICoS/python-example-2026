@@ -1,24 +1,11 @@
-from dataclasses import dataclass
-
 import numpy as np
 from biosigpy.tools import snap_to_peak
 from scipy.signal import butter, filtfilt, find_peaks
 
 
-@dataclass(frozen=True)
-class PanTompkinsTrace:
-    """Final outputs retained by the temporary ECG viewer."""
-
-    r_amplitudes: np.ndarray
-    r_locations: np.ndarray
-    delay: int
-
-
 def pan_tompkins(
     ecg,
     fs,
-    gr=0,
-    return_trace=False,
     snap_to_peak_window_size=20.0,
 ):
     fs = int(round(float(fs)))
@@ -26,12 +13,8 @@ def pan_tompkins(
         raise ValueError('Sampling frequency must be positive.')
 
     ecg = np.asarray(ecg).flatten()
-    delay = 0
-
-    skip = 0
     m_selected_RR = 0
     mean_RR = 0
-    ser_back = 0
 
     # ===================== FILTERING ===================== #
     ecg = ecg - np.mean(ecg)
@@ -70,7 +53,6 @@ def pan_tompkins(
     # ===================== MOVING WINDOW ===================== #
     win = int(round(0.150 * fs))
     ecg_m = np.convolve(ecg_s, np.ones(win)/win, mode='same')
-    delay += win // 2
 
     # ===================== PEAK DETECTION ===================== #
     locs, _ = find_peaks(ecg_m, distance=int(0.2 * fs))
@@ -79,12 +61,7 @@ def pan_tompkins(
     LLp = len(pks)
 
     qrs_i = []
-    qrs_c = []
     qrs_i_raw = []
-    qrs_amp_raw = []
-
-    nois_i = []
-    nois_c = []
 
     # Threshold initialization
     THR_SIG = np.max(ecg_m[:2*fs]) / 3
@@ -96,9 +73,6 @@ def pan_tompkins(
     THR_NOISE1 = np.mean(ecg_h[:2*fs]) / 2
     SIG_LEV1 = THR_SIG1
     NOISE_LEV1 = THR_NOISE1
-
-    Beat_C = 0
-    Beat_C1 = 0
 
     for i in range(LLp):
 
@@ -146,7 +120,6 @@ def pan_tompkins(
                         locs_temp = sb_left + np.argmax(segment)
 
                         if pks_temp > THR_NOISE:
-                            qrs_c.append(pks_temp)
                             qrs_i.append(locs_temp)
 
                             seg = ecg_h[max(0, locs_temp-int(0.150*fs)):locs_temp]
@@ -156,7 +129,6 @@ def pan_tompkins(
 
                                 if y_i_t > THR_NOISE1:
                                     qrs_i_raw.append(locs_temp - int(0.150*fs) + x_i_t)
-                                    qrs_amp_raw.append(y_i_t)
                                     SIG_LEV1 = 0.25*y_i_t + 0.75*SIG_LEV1
 
                             SIG_LEV = 0.25*pks_temp + 0.75*SIG_LEV
@@ -177,12 +149,10 @@ def pan_tompkins(
                         continue
 
             # Accept QRS
-            qrs_c.append(pks[i])
             qrs_i.append(loc)
 
             if y_i >= THR_SIG1:
                 qrs_i_raw.append(loc - int(0.150*fs) + x_i)
-                qrs_amp_raw.append(y_i)
                 SIG_LEV1 = 0.125*y_i + 0.875*SIG_LEV1
 
             SIG_LEV = 0.125*pks[i] + 0.875*SIG_LEV
@@ -215,21 +185,7 @@ def pan_tompkins(
         refined_r_locations = np.unique(
             np.sort((refined_r_locations - 1.0).astype(int))
         )
-        refined_r_amplitudes = ecg[refined_r_locations]
     else:
         refined_r_locations = unrefined_r_locations.copy()
-        refined_r_amplitudes = np.array([], dtype=float)
 
-    trace = PanTompkinsTrace(
-        r_amplitudes=np.asarray(refined_r_amplitudes, dtype=float),
-        r_locations=np.asarray(refined_r_locations, dtype=int),
-        delay=delay,
-    )
-    if return_trace:
-        return trace
-
-    return (
-        trace.r_amplitudes,
-        trace.r_locations,
-        trace.delay,
-    )
+    return np.asarray(refined_r_locations, dtype=int)

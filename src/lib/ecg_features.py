@@ -4,23 +4,15 @@ from typing import cast
 from scipy.signal import butter, filtfilt, resample
 
 from .ecg_age import compute_ecgage
-from .ecg_frequency_features import compute_frequency_domain_hrv
+from .ecg_frequency_features import (
+    FREQUENCY_DOMAIN_METRIC_NAMES,
+    compute_frequency_domain_hrv,
+)
 from .ecg_peak_detection import pan_tompkins
 from .ecg_hrv_features import compute_time_domain_hrv
 from .ecg_quality import (
     compute_ecg_amplitude_spread_ratio,
     evaluate_ecg_segment_quality,
-)
-
-
-FD_METRIC_NAMES = (
-    "LF",
-    "HF_RESP",
-    "LFN_RESP",
-    "LFHF_RESP",
-    "URLF",
-    "RE",
-    "R",
 )
 
 
@@ -77,7 +69,7 @@ def compute_ecg_features(
     )
     ecg_signal = filtfilt(b, a, ecg_signal)
 
-    _, r_locations, _ = pan_tompkins(ecg_signal, fs, 0)
+    r_locations = pan_tompkins(ecg_signal, fs)
     r_wave_times = np.asarray(r_locations, dtype=float) / fs
     time_domain = compute_time_domain_hrv(
         r_wave_times,
@@ -97,16 +89,19 @@ def compute_ecg_features(
         return np.full(ecg_feature_length, np.nan, dtype=np.float32)
 
     metrics = time_domain.metrics
-    frequency_metrics = {name: np.nan for name in FD_METRIC_NAMES}
+    frequency_metrics = {
+        name: np.nan for name in FREQUENCY_DOMAIN_METRIC_NAMES
+    }
     try:
-        frequency_domain = compute_frequency_domain_hrv(
-            time_domain.cleaned_event_times,
-            ecg_signal,
-            fs,
-            respiration_signal=respiration_signal,
-            respiration_sampling_frequency=respiration_sampling_frequency,
+        frequency_metrics.update(
+            compute_frequency_domain_hrv(
+                time_domain.cleaned_event_times,
+                ecg_signal,
+                fs,
+                respiration_signal=respiration_signal,
+                respiration_sampling_frequency=respiration_sampling_frequency,
+            )
         )
-        frequency_metrics.update(frequency_domain.metrics)
     except (TypeError, ValueError, np.linalg.LinAlgError):
         pass
     ecg_age = compute_ecgage(ecg_signal)

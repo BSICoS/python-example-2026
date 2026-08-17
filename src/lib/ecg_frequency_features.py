@@ -1,7 +1,5 @@
 """Frequency-domain HRV features using the Biosigpy reconstruction flow."""
 
-from dataclasses import dataclass
-
 import numpy as np
 from biosigpy.ecg import sloperange
 from biosigpy.hrv import fdmetrics, fillgaps, ipfm, osp
@@ -20,35 +18,15 @@ WELCH_WINDOW_SECONDS = 120.0
 WELCH_OVERLAP_FRACTION = 0.5
 WELCH_NFFT = 4096
 MAX_SPECTRUM_FREQUENCY_HZ = 1.0
-
-
-@dataclass(frozen=True)
-class FrequencyDomainHrvResult:
-    metrics: dict[str, float]
-    respiration_source: str
-    respiration_frequency: float
-    filled_event_times: np.ndarray
-    filled_intervals: np.ndarray
-    selected_event_times: np.ndarray
-    sample_times: np.ndarray
-    modulation: np.ndarray
-    respiration: np.ndarray
-    frequencies: np.ndarray
-    spectrum: np.ndarray
-    respiration_spectrum: np.ndarray
-    related_frequencies: np.ndarray
-    related_spectrum: np.ndarray
-    unrelated_spectrum: np.ndarray
-
-    @property
-    def welch_window_count(self):
-        window_samples = int(
-            WELCH_WINDOW_SECONDS * IPFM_SAMPLING_FREQUENCY
-        )
-        step_samples = int(
-            window_samples * (1.0 - WELCH_OVERLAP_FRACTION)
-        )
-        return 1 + (self.modulation.size - window_samples) // step_samples
+FREQUENCY_DOMAIN_METRIC_NAMES = (
+    "LF",
+    "HF_RESP",
+    "LFN_RESP",
+    "LFHF_RESP",
+    "URLF",
+    "RE",
+    "R",
+)
 
 
 def _power_spectrum(signal, sampling_frequency):
@@ -88,6 +66,7 @@ def _largest_contiguous_segment(event_times, intervals):
         key=lambda values: (values[-1] - values[0], values.size),
     )
 
+
 def _align_signal(signal, sampling_frequency, sample_times):
     values = np.asarray(signal, dtype=float).flatten()
     if values.size < 2 or sampling_frequency <= 0:
@@ -96,9 +75,8 @@ def _align_signal(signal, sampling_frequency, sample_times):
     finite = np.isfinite(values)
     if np.count_nonzero(finite) < 2:
         raise ValueError("Respiration must contain at least two finite samples.")
-    centered = detrend(values[finite])
     aligned = PchipInterpolator(
-        times[finite], centered, extrapolate=False
+        times[finite], detrend(values[finite]), extrapolate=False
     )(sample_times)
     if np.any(~np.isfinite(aligned)):
         raise ValueError("Respiration does not cover the complete HRV grid.")
@@ -123,9 +101,8 @@ def _derive_respiration(
     finite = np.isfinite(edr)
     if np.count_nonzero(finite) < 2:
         raise ValueError("Slope-range produced too few finite samples.")
-    centered = detrend(edr[finite])
     aligned = PchipInterpolator(
-        event_times[finite], centered, extrapolate=False
+        event_times[finite], detrend(edr[finite]), extrapolate=False
     )(sample_times)
     if np.any(~np.isfinite(aligned)):
         raise ValueError("Slope-range does not cover the complete HRV grid.")
@@ -184,21 +161,19 @@ def compute_frequency_domain_hrv(
         np.arange(modulation.size, dtype=float) / IPFM_SAMPLING_FREQUENCY
     )
 
-    if respiration_signal is not None:
-        respiration = _align_signal(
-            respiration_signal,
-            float(respiration_sampling_frequency),
-            sample_times,
-        )
-        respiration_source = "direct"
-    else:
+    if respiration_signal is None:
         respiration = _derive_respiration(
             np.asarray(ecg_signal, dtype=float),
             float(ecg_sampling_frequency),
             cleaned_event_times,
             sample_times,
         )
-        respiration_source = "sloperange"
+    else:
+        respiration = _align_signal(
+            respiration_signal,
+            float(respiration_sampling_frequency),
+            sample_times,
+        )
 
     frequencies, spectrum = _power_spectrum(
         modulation, IPFM_SAMPLING_FREQUENCY
@@ -243,30 +218,12 @@ def compute_frequency_domain_hrv(
         unrelated_pxx=unrelated_spectrum,
     )
 
-    return FrequencyDomainHrvResult(
-        metrics={
-            "LF": float(lf),
-            "HF_RESP": float(hf),
-            "LFN_RESP": float(lfn),
-            "LFHF_RESP": float(lfhf),
-            "URLF": float(separated.urlf),
-            "RE": float(separated.re),
-            "R": float(separated.r),
-        },
-        respiration_source=respiration_source,
-        respiration_frequency=respiration_frequency,
-        filled_event_times=np.asarray(filled.tn, dtype=float),
-        filled_intervals=np.asarray(filled.dtn, dtype=float),
-        selected_event_times=np.asarray(selected_event_times, dtype=float),
-        sample_times=sample_times,
-        modulation=np.asarray(modulation, dtype=float),
-        respiration=respiration,
-        frequencies=np.asarray(frequencies, dtype=float),
-        spectrum=np.asarray(spectrum, dtype=float),
-        respiration_spectrum=np.asarray(
-            respiration_spectrum, dtype=float
-        ),
-        related_frequencies=np.asarray(related_frequencies, dtype=float),
-        related_spectrum=np.asarray(related_spectrum, dtype=float),
-        unrelated_spectrum=np.asarray(unrelated_spectrum, dtype=float),
-    )
+    return {
+        "LF": float(lf),
+        "HF_RESP": float(hf),
+        "LFN_RESP": float(lfn),
+        "LFHF_RESP": float(lfhf),
+        "URLF": float(separated.urlf),
+        "RE": float(separated.re),
+        "R": float(separated.r),
+    }

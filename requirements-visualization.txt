@@ -1,3 +1,0 @@
-# Local-only dependency for the interactive ECG inspection window.
-# Do not install this file in the Challenge Docker image.
-PyQt6==6.11.0
