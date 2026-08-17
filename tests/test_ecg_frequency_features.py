@@ -12,6 +12,7 @@ from src.lib.ecg_frequency_features import (
     WELCH_NFFT,
     WELCH_OVERLAP_FRACTION,
     WELCH_WINDOW_SECONDS,
+    _highpass_hrv,
     _largest_contiguous_segment,
     _power_spectrum,
     compute_frequency_domain_hrv,
@@ -115,3 +116,15 @@ def test_frequency_domain_uses_longest_segment_around_unresolved_large_gap():
     assert selected_events[0] == 96.0
     assert selected_events[-1] == 298.0
     assert set(metrics) == set(FREQUENCY_DOMAIN_METRIC_NAMES)
+
+def test_hrv_highpass_filters_vlf_before_spectral_estimation():
+    sampling_frequency = 4.0
+    time = np.arange(300 * sampling_frequency) / sampling_frequency
+    vlf = np.sin(2 * np.pi * 0.02 * time)
+    passband = np.sin(2 * np.pi * 0.2 * time)
+
+    filtered_vlf = _highpass_hrv(vlf, sampling_frequency)
+    filtered_passband = _highpass_hrv(passband, sampling_frequency)
+
+    assert np.std(filtered_vlf) < 0.1 * np.std(vlf)
+    assert np.std(filtered_passband) > 0.9 * np.std(passband)

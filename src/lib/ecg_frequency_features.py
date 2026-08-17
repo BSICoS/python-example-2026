@@ -6,13 +6,15 @@ from biosigpy.hrv import fdmetrics, fillgaps, ipfm, osp
 from biosigpy.tools import lpd_filter, nan_filter
 from scipy.integrate import trapezoid
 from scipy.interpolate import PchipInterpolator
-from scipy.signal import detrend, welch
+from scipy.signal import butter, detrend, filtfilt, welch
 
 
 IPFM_SAMPLING_FREQUENCY = 4.0
 RESPIRATORY_HALF_BANDWIDTH_HZ = 0.125
 MIN_RESPIRATORY_FREQUENCY_HZ = 0.1
 MAX_RESPIRATORY_FREQUENCY_HZ = 0.5
+HRV_HIGHPASS_CUTOFF_HZ = 0.04
+HRV_HIGHPASS_ORDER = 4
 FILLGAPS_MAX_GAP_SECONDS = 10.0
 WELCH_WINDOW_SECONDS = 120.0
 WELCH_OVERLAP_FRACTION = 0.5
@@ -28,6 +30,16 @@ FREQUENCY_DOMAIN_METRIC_NAMES = (
     "R",
 )
 
+
+def _highpass_hrv(signal, sampling_frequency):
+    values = np.asarray(signal, dtype=float).flatten()
+    numerator, denominator = butter(
+        HRV_HIGHPASS_ORDER,
+        HRV_HIGHPASS_CUTOFF_HZ,
+        btype="highpass",
+        fs=float(sampling_frequency),
+    )
+    return filtfilt(numerator, denominator, values)
 
 def _power_spectrum(signal, sampling_frequency):
     values = np.asarray(signal, dtype=float).flatten()
@@ -175,8 +187,11 @@ def compute_frequency_domain_hrv(
             sample_times,
         )
 
-    frequencies, spectrum = _power_spectrum(
+    filtered_modulation = _highpass_hrv(
         modulation, IPFM_SAMPLING_FREQUENCY
+    )
+    frequencies, spectrum = _power_spectrum(
+        filtered_modulation, IPFM_SAMPLING_FREQUENCY
     )
     respiration_frequencies, respiration_spectrum = _power_spectrum(
         respiration, IPFM_SAMPLING_FREQUENCY
@@ -204,11 +219,17 @@ def compute_frequency_domain_hrv(
         frequencies,
         IPFM_SAMPLING_FREQUENCY,
     )
-    related_frequencies, related_spectrum = _power_spectrum(
+    respiration_related = _highpass_hrv(
         decomposition.m_resp, IPFM_SAMPLING_FREQUENCY
     )
-    unrelated_frequencies, unrelated_spectrum = _power_spectrum(
+    related_frequencies, related_spectrum = _power_spectrum(
+        respiration_related, IPFM_SAMPLING_FREQUENCY
+    )
+    respiration_unrelated = _highpass_hrv(
         decomposition.m_unrelated, IPFM_SAMPLING_FREQUENCY
+    )
+    unrelated_frequencies, unrelated_spectrum = _power_spectrum(
+        respiration_unrelated, IPFM_SAMPLING_FREQUENCY
     )
     if not np.array_equal(related_frequencies, unrelated_frequencies):
         raise ValueError("OSP component spectra use different grids.")

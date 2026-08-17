@@ -1018,7 +1018,7 @@
 #     }
 
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, f1_score, confusion_matrix
 import numpy as np
@@ -1437,31 +1437,42 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     metadata_rows = []
 
     with ThreadPoolExecutor(max_workers=MAX_TRAIN_WORKERS) as executor:
-        results = executor.map(
-            lambda record: process_training_record(
+        futures = {
+            executor.submit(
+                process_training_record,
                 record,
                 data_folder,
                 demographics_cache,
                 diagnosis_cache,
                 csv_path,
-            ),
-            patient_metadata_list,
+            ): index
+            for index, record in enumerate(patient_metadata_list)
+        }
+        ordered_results = [None] * num_records
+
+        pbar = tqdm(
+            total=num_records,
+            desc='Extracting Features',
+            unit='record',
+            disable=not verbose,
         )
-
-        pbar = tqdm(results, total=num_records, desc='Extracting Features', unit='record', disable=not verbose)
-        for metadata, feature_vector, label, message in pbar:
+        for future in as_completed(futures):
+            result = future.result()
+            ordered_results[futures[future]] = result
             if verbose:
-                pbar.set_postfix({'patient': metadata['patient_id']})
-
-            if message is not None:
-                tqdm.write(f"  ! {message}")
-                continue
-
-            features.append(feature_vector)
-            labels.append(label)
-            metadata_rows.append(metadata)
+                pbar.set_postfix({'patient': result[0]['patient_id']})
+            pbar.update(1)
 
         pbar.close()
+
+    for metadata, feature_vector, label, message in ordered_results:
+        if message is not None:
+            tqdm.write(f"  ! {message}")
+            continue
+
+        features.append(feature_vector)
+        labels.append(label)
+        metadata_rows.append(metadata)
 
     features = np.asarray(features, dtype=np.float32)
     labels = np.asarray(labels, dtype=np.int32)
