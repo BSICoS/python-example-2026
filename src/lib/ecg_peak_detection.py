@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+from biosigpy.tools import snap_to_peak
 from scipy.signal import butter, filtfilt, find_peaks
 
 
@@ -14,12 +15,19 @@ class PanTompkinsTrace:
     derivative_squared: np.ndarray
     envelope: np.ndarray
     candidate_locations: np.ndarray
+    unrefined_r_locations: np.ndarray
     r_amplitudes: np.ndarray
     r_locations: np.ndarray
     delay: int
 
 
-def pan_tompkins(ecg, fs, gr=0, return_trace=False):
+def pan_tompkins(
+    ecg,
+    fs,
+    gr=0,
+    return_trace=False,
+    snap_to_peak_window_size=20.0,
+):
     fs = int(round(float(fs)))
     if fs <= 0:
         raise ValueError('Sampling frequency must be positive.')
@@ -201,6 +209,24 @@ def pan_tompkins(ecg, fs, gr=0, return_trace=False):
         THR_SIG1 = NOISE_LEV1 + 0.25 * abs(SIG_LEV1 - NOISE_LEV1)
         THR_NOISE1 = 0.5 * THR_SIG1
 
+    unrefined_r_locations = np.asarray(qrs_i_raw, dtype=int)
+    if unrefined_r_locations.size:
+        refined_r_locations = snap_to_peak(
+            ecg,
+            unrefined_r_locations.astype(float) + 1.0,
+            snap_to_peak_window_size,
+        )
+        refined_r_locations = refined_r_locations[
+            np.isfinite(refined_r_locations)
+        ]
+        refined_r_locations = np.unique(
+            np.sort((refined_r_locations - 1.0).astype(int))
+        )
+        refined_r_amplitudes = ecg[refined_r_locations]
+    else:
+        refined_r_locations = unrefined_r_locations.copy()
+        refined_r_amplitudes = np.array([], dtype=float)
+
     trace = PanTompkinsTrace(
         ecg_centered=np.asarray(ecg, dtype=float),
         ecg_bandpassed=np.asarray(ecg_h, dtype=float),
@@ -208,8 +234,9 @@ def pan_tompkins(ecg, fs, gr=0, return_trace=False):
         derivative_squared=np.asarray(ecg_s, dtype=float),
         envelope=np.asarray(ecg_m, dtype=float),
         candidate_locations=np.asarray(locs, dtype=int),
-        r_amplitudes=np.asarray(qrs_amp_raw, dtype=float),
-        r_locations=np.asarray(qrs_i_raw, dtype=int),
+        unrefined_r_locations=unrefined_r_locations,
+        r_amplitudes=np.asarray(refined_r_amplitudes, dtype=float),
+        r_locations=np.asarray(refined_r_locations, dtype=int),
         delay=delay,
     )
     if return_trace:

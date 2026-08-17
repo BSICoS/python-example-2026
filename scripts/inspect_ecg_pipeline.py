@@ -442,57 +442,94 @@ class EcgInspectionViewer:
             self.axes[2].set_ylabel("Scaled")
             self.axes[2].set_title("3. Legacy Pan-Tompkins internal signals")
 
-            r_times = detector.r_locations / self.trace.processed_fs
+            r_indices = detector.r_locations
+            r_times = r_indices / self.trace.processed_fs
+            detection_signal = detector.ecg_centered
             self.axes[3].plot(
                 detector_time,
-                detector.ecg_centered,
+                detection_signal,
                 color="black",
                 linewidth=0.8,
             )
-            valid_r = detector.r_locations[
-                detector.r_locations < detector.ecg_centered.size
-            ]
+            unrefined_indices = detector.unrefined_r_locations
+            valid_unrefined = (
+                (unrefined_indices >= 0)
+                & (unrefined_indices < detection_signal.size)
+            )
             self.axes[3].scatter(
-                valid_r / self.trace.processed_fs,
-                detector.ecg_centered[valid_r],
+                unrefined_indices[valid_unrefined]
+                / self.trace.processed_fs,
+                detection_signal[unrefined_indices[valid_unrefined]],
+                s=16,
+                facecolors="none",
+                edgecolors="tab:blue",
+                label="Before snap_to_peak",
+                zorder=2,
+            )
+            valid_mask = (
+                (r_indices >= 0)
+                & (r_indices < detection_signal.size)
+            )
+            valid_indices = r_indices[valid_mask]
+            valid_times = r_times[valid_mask]
+            self.axes[3].scatter(
+                valid_times,
+                detection_signal[valid_indices],
                 s=18,
                 color="tab:red",
-                label=f"R waves ({valid_r.size})",
+                label=f"Refined R waves ({valid_indices.size})",
                 zorder=3,
             )
+            removed_mask = (
+                self.trace.removed_detection_mask
+                if self.trace.removed_detection_mask.size == r_times.size
+                else np.zeros(r_times.size, dtype=bool)
+            )
+            visible_removed = removed_mask & valid_mask
+            if np.any(visible_removed):
+                removed_indices = r_indices[visible_removed]
+                self.axes[3].scatter(
+                    r_times[visible_removed],
+                    detection_signal[removed_indices],
+                    s=45,
+                    color="tab:orange",
+                    marker="x",
+                    label=(
+                        "Removed by removefp "
+                        f"({np.count_nonzero(removed_mask)})"
+                    ),
+                    zorder=4,
+                )
             self.axes[3].legend(loc="upper left")
             self.axes[3].set_ylabel("ECG")
-            self.axes[3].set_title("4. Refined R-wave detections")
-
+            self.axes[3].set_title("4. Legacy refined R-wave detections")
             if self.trace.raw_intervals.size:
-                interval_times = r_times[1 : 1 + self.trace.raw_intervals.size]
+                raw_interval_times = r_times[
+                    1 : 1 + self.trace.raw_intervals.size
+                ]
                 self.axes[4].plot(
-                    interval_times,
+                    raw_interval_times,
                     self.trace.raw_intervals,
                     ".-",
                     color="0.55",
                     label="Raw RR",
                 )
+            if self.trace.cleaned_intervals.size:
+                cleaned_interval_times = self.trace.cleaned_event_times[1:]
                 self.axes[4].plot(
-                    interval_times,
-                    self.trace.corrected_intervals,
+                    cleaned_interval_times,
+                    self.trace.cleaned_intervals,
                     ".-",
                     color="tab:green",
-                    label="Corrected RR",
+                    label="RR after removefp",
                 )
-                if np.any(self.trace.ectopic_mask):
-                    self.axes[4].scatter(
-                        interval_times[self.trace.ectopic_mask],
-                        self.trace.raw_intervals[self.trace.ectopic_mask],
-                        color="tab:red",
-                        marker="x",
-                        s=35,
-                        label="Replaced",
-                        zorder=4,
-                    )
-                self.axes[4].legend(loc="upper left", ncols=3, fontsize=8)
+            if (
+                self.trace.raw_intervals.size
+                or self.trace.cleaned_intervals.size
+            ):
+                self.axes[4].legend(loc="upper left", ncols=2, fontsize=8)
         self.axes[4].set_ylabel("RR (s)")
-        self.axes[4].set_title("5. Legacy interval cleaning")
+        self.axes[4].set_title("5. Biosigpy removefp (no fillgaps)")
         self.axes[4].set_xlabel("Seconds inside the processing window")
 
         quality = self.trace.quality
@@ -509,13 +546,19 @@ class EcgInspectionViewer:
         if quality is not None:
             metric_lines.extend(
                 (
-                    f"R detections: {quality.detection_count} "
+                    f"R detections: {quality.raw_detection_count} raw -> "
+                    f"{quality.cleaned_detection_count} after removefp "
                     f"[{quality.minimum_detections}, "
                     f"{quality.maximum_detections}]",
-                    f"Altered RR: {quality.altered_count}/"
-                    f"{quality.interval_count} "
-                    f"({quality.altered_fraction:.1%}; "
-                    f"maximum {quality.maximum_altered_fraction:.1%})",
+                    f"Removed detections: "
+                    f"{quality.removed_detection_count}/"
+                    f"{quality.raw_detection_count} "
+                    f"({quality.removed_fraction:.1%}; "
+                    f"maximum {quality.maximum_removed_fraction:.1%})",
+                    f"ECG amplitude spread: "
+                    f"{quality.amplitude_spread_ratio:.2f} "
+                    f"(maximum "
+                    f"{quality.maximum_amplitude_spread_ratio:.2f})",
                 )
             )
         if self.trace.features is not None:
@@ -528,8 +571,9 @@ class EcgInspectionViewer:
             )
         metric_lines.extend(
             (
-                f"Valid RR: {self.trace.valid_ratio:.1%}",
-                f"Replaced RR: {self.trace.ectopic_percentage:.2f}%",
+                f"Removed by removefp: "
+                f"{self.trace.removed_percentage:.2f}%",
+                "TD units: AVNN s; SDNN/RMSSD ms",
             )
         )
         if self.trace.failure_reason:

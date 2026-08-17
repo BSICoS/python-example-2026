@@ -2,7 +2,7 @@
 
 This module intentionally mirrors the production path without changing the
 feature extractor. Equivalence is covered by tests while the migration viewer
-is in use; the module can be removed once the Biosigpy pipeline replaces it.
+is in use; the module can be removed with the visualization layer.
 """
 
 from dataclasses import dataclass, field
@@ -12,11 +12,14 @@ import numpy as np
 from scipy.signal import butter, filtfilt, resample
 
 from .ecg_age import compute_ecgage
-from .ecg_hrv_features import compute_hrv_hrf
-from .ecg_nn_interpolation import interpolate_nn_pchip
+
+from .ecg_hrv_features import compute_legacy_hf, compute_time_domain_hrv
 from .ecg_peak_detection import PanTompkinsTrace, pan_tompkins
-from .ecg_quality import EcgSegmentQuality, evaluate_ecg_segment_quality
-from .ecg_rr_cleaning import remove_ectopic_beats_with_mask
+from .ecg_quality import (
+    EcgSegmentQuality,
+    compute_ecg_amplitude_spread_ratio,
+    evaluate_ecg_segment_quality,
+)
 
 
 def _empty_float_array():
@@ -35,19 +38,18 @@ class CurrentEcgTrace:
     original_fs: int
     processed_fs: int | None = None
     signal_duration_seconds: float = 0.0
-    minimum_intervals_per_window: int = 0
+
     centered_signal: np.ndarray = field(default_factory=_empty_float_array)
     resampled_signal: np.ndarray = field(default_factory=_empty_float_array)
     notch_filtered_signal: np.ndarray = field(default_factory=_empty_float_array)
     highpass_filtered_signal: np.ndarray = field(default_factory=_empty_float_array)
     lowpass_filtered_signal: np.ndarray = field(default_factory=_empty_float_array)
     detector: PanTompkinsTrace | None = None
+    cleaned_event_times: np.ndarray = field(default_factory=_empty_float_array)
+    removed_detection_mask: np.ndarray = field(default_factory=_empty_bool_array)
     raw_intervals: np.ndarray = field(default_factory=_empty_float_array)
-    corrected_intervals: np.ndarray = field(default_factory=_empty_float_array)
-    interpolated_intervals: np.ndarray = field(default_factory=_empty_float_array)
-    ectopic_mask: np.ndarray = field(default_factory=_empty_bool_array)
-    ectopic_percentage: float = np.nan
-    valid_ratio: float = np.nan
+    cleaned_intervals: np.ndarray = field(default_factory=_empty_float_array)
+    removed_percentage: float = np.nan
     quality: EcgSegmentQuality | None = None
     metrics: dict[str, float] = field(default_factory=dict)
     features: np.ndarray | None = None
@@ -92,11 +94,6 @@ def inspect_current_ecg_features(
 
     trace.processed_fs = fs
     trace.resampled_signal = np.asarray(processed_signal, dtype=float).copy()
-    window_length_seconds = max(1, int(trace.signal_duration_seconds))
-    trace.minimum_intervals_per_window = max(
-        1,
-        int(np.ceil(window_length_seconds / 2)),
-    )
 
     if (
         np.sum(np.isnan(processed_signal)) != 0
@@ -143,52 +140,34 @@ def inspect_current_ecg_features(
             return_trace=True,
         )
     except Exception as error:
-        trace.failure_reason = f"Pan-Tompkins failed: {error}"
-        return trace
+        return reject(f"Pan-Tompkins failed: {error}")
 
-    r_locations = trace.detector.r_locations
-    trace.raw_intervals = np.diff(r_locations) / fs
-    (
-        trace.corrected_intervals,
-        trace.ectopic_percentage,
-        trace.ectopic_mask,
-    ) = remove_ectopic_beats_with_mask(
-        trace.raw_intervals,
-        40,
-        0.10,
+    time_domain = compute_time_domain_hrv(
+        np.asarray(trace.detector.r_locations, dtype=float) / fs,
+        fs,
+    )
+    trace.cleaned_event_times = time_domain.cleaned_event_times
+    trace.removed_detection_mask = time_domain.removed_detection_mask
+    trace.raw_intervals = np.diff(time_domain.raw_event_times)
+    trace.cleaned_intervals = time_domain.intervals
+    trace.removed_percentage = time_domain.removed_percentage
+    amplitude_spread_ratio = compute_ecg_amplitude_spread_ratio(
+        trace.lowpass_filtered_signal,
+        fs,
     )
     trace.quality = evaluate_ecg_segment_quality(
-        detection_count=len(r_locations),
-        altered_count=np.count_nonzero(trace.ectopic_mask),
+        raw_detection_count=len(time_domain.raw_event_times),
+        cleaned_detection_count=len(time_domain.cleaned_event_times),
         duration_seconds=trace.signal_duration_seconds,
+        amplitude_spread_ratio=amplitude_spread_ratio,
     )
     if not trace.quality.is_valid:
         return reject(
             "ECG quality rejected: " + "; ".join(trace.quality.reasons)
         )
 
-    trace.interpolated_intervals = interpolate_nn_pchip(
-        trace.corrected_intervals,
-        2,
-    )
-
-    if len(trace.interpolated_intervals) == 0:
-        return reject("No intervals remain after legacy cleaning.")
-
-    trace.valid_ratio = float(
-        np.sum(~np.isnan(trace.interpolated_intervals))
-        / len(trace.interpolated_intervals)
-    )
-    valid_intervals = trace.interpolated_intervals[
-        ~np.isnan(trace.interpolated_intervals)
-    ]
-    if (
-        trace.valid_ratio < 0.75
-        or len(valid_intervals) < trace.minimum_intervals_per_window
-    ):
-        return reject("Fewer than 75% of intervals remain valid.")
-
-    trace.metrics = compute_hrv_hrf(valid_intervals, fs)
+    trace.metrics = time_domain.metrics.copy()
+    trace.metrics["HF"] = compute_legacy_hf(time_domain.intervals)
     try:
         ecg_age = compute_ecgage(trace.lowpass_filtered_signal)
     except Exception as error:
@@ -204,7 +183,7 @@ def inspect_current_ecg_features(
             trace.metrics["SDNN"],
             trace.metrics["RMSSD"],
             trace.metrics["HF"],
-            trace.ectopic_percentage,
+            trace.removed_percentage,
             ecg_age,
         ],
         dtype=np.float32,
