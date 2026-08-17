@@ -4,7 +4,8 @@ from scipy.signal import butter, filtfilt, resample
 from .ecg_peak_detection import pan_tompkins
 from .ecg_hrv_features import compute_hrv_hrf
 from .ecg_nn_interpolation import interpolate_nn_pchip
-from .ecg_rr_cleaning import remove_ectopic_beats
+from .ecg_quality import evaluate_ecg_segment_quality
+from .ecg_rr_cleaning import remove_ectopic_beats_with_mask
 from .ecg_age import compute_ecgage
 
 
@@ -43,12 +44,19 @@ def compute_ecg_features(ecg_signal, fs, ecg_feature_length):
 
     _, r_locs, _ = pan_tompkins(ecg_signal, fs, 0)
 
-    if len(r_locs) - 1 < minimum_intervals_per_window:
-        return np.full(ecg_feature_length, np.nan, dtype=np.float32)
-
     nn_intervals = np.diff(r_locs) / fs
 
-    nn_intervals, ectopic_perc = remove_ectopic_beats(nn_intervals, 40, 0.10)
+    nn_intervals, ectopic_perc, ectopic_mask = (
+        remove_ectopic_beats_with_mask(nn_intervals, 40, 0.10)
+    )
+    quality = evaluate_ecg_segment_quality(
+        detection_count=len(r_locs),
+        altered_count=np.count_nonzero(ectopic_mask),
+        duration_seconds=signal_duration_seconds,
+    )
+    if not quality.is_valid:
+        return np.full(ecg_feature_length, np.nan, dtype=np.float32)
+
     nn_intervals = interpolate_nn_pchip(nn_intervals, 2)
 
     if len(nn_intervals) == 0:

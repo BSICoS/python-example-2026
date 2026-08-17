@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from .lib import resp_features
 import numpy as np
 from src.common.channel_utils import get_cached_channel_table, normalize_channel_label, split_channel_aliases
@@ -17,6 +19,20 @@ RESP_SEGMENT_FEATURE_LENGTH = len(RESP_SEGMENT_FEATURE_NAMES)
 RESP_FEATURE_NAMES = RESP_SEGMENT_FEATURE_NAMES
 RESP_FEATURE_LENGTH = RESP_SEGMENT_FEATURE_LENGTH
 RESP_ALIAS_GROUPS_CACHE = {}
+
+
+@dataclass(frozen=True)
+class SelectedRespiration:
+    """Best direct respiration channel according to the feature pipeline."""
+
+    label: str
+    group: str
+    signal: np.ndarray
+    sampling_frequency: float
+    resampled_signal: np.ndarray
+    resampled_frequency: float
+    quality: float
+    peakedness: float
 
 
 def _build_resp_alias_groups(channels):
@@ -49,6 +65,13 @@ def _find_resp_group(label, alias_groups):
     return None
 
 
+def get_respiration_feature_group(label, csv_path):
+    """Return the production respiratory group, excluding SpO2 and extras."""
+
+    group_name = _find_resp_group(label, _get_resp_alias_groups(csv_path))
+    return group_name if group_name in RESP_CHANNEL_GROUPS else None
+
+
 def _compute_resp_quality(used, hat_br):
     used_array = np.asarray(used, dtype=float)
     if used_array.size:
@@ -67,6 +90,84 @@ def _compute_peakedness_metric(hat_br):
     if finite_values.size == 0:
         return np.nan
     return float(np.mean(finite_values))
+
+
+def _evaluate_direct_respiration(label, signal, sampling_frequency, group_name):
+    original = np.asarray(signal, dtype=float)
+    resampled, resampled_fs = resample_signal(
+        original,
+        sampling_frequency,
+        25,
+    )
+    resampled = np.nan_to_num(
+        resampled,
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+
+    try:
+        hat_br, _, _, used = resp_features.peakedness_application(
+            resampled,
+            stage=label,
+            subject_id=label,
+        )
+    except Exception:
+        return None
+
+    peakedness = _compute_peakedness_metric(hat_br)
+    if not np.isfinite(peakedness):
+        return None
+
+    return SelectedRespiration(
+        label=label,
+        group=group_name,
+        signal=original,
+        sampling_frequency=float(sampling_frequency),
+        resampled_signal=np.asarray(resampled, dtype=float),
+        resampled_frequency=float(resampled_fs),
+        quality=_compute_resp_quality(used, hat_br),
+        peakedness=peakedness,
+    )
+
+
+def select_best_respiration_signal(
+    physiological_data,
+    physiological_fs,
+    csv_path,
+):
+    """Select one direct respiratory signal using production criteria.
+
+    Only the four respiratory groups used by processResp are eligible.
+    Returning None is intentional: downstream ECG/HRV processing must use
+    sloperange in that case instead of silently selecting another EDF channel.
+    """
+
+    alias_groups = _get_resp_alias_groups(csv_path)
+    best = None
+
+    for label, signal in physiological_data.items():
+        if label not in physiological_fs:
+            continue
+
+        group_name = _find_resp_group(label, alias_groups)
+        if group_name not in RESP_CHANNEL_GROUPS:
+            continue
+
+        candidate = _evaluate_direct_respiration(
+            label,
+            signal,
+            physiological_fs[label],
+            group_name,
+        )
+        if candidate is None:
+            continue
+        if best is not None and candidate.quality <= best.quality:
+            continue
+
+        best = candidate
+
+    return best
 
 
 def _compute_spo2_segment_metrics(data, fs):
@@ -111,31 +212,33 @@ def processResp(physiological_data, physiological_fs, csv_path):
         if group_name is None:
             continue
 
-        resampled, fs = resample_signal(signal, physiological_fs[label], 25)
-        resampled = np.nan_to_num(resampled, nan=0.0, posinf=0.0, neginf=0.0)
-
         if group_name == 'SpO2':
+            resampled, fs = resample_signal(
+                signal,
+                physiological_fs[label],
+                25,
+            )
+            resampled = np.nan_to_num(
+                resampled,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
             results.update(_compute_spo2_segment_metrics(resampled, fs))
             continue
 
-        try:
-            hat_br, _, _, used = resp_features.peakedness_application(
-                resampled,
-                stage=label,
-                subject_id=label,
-            )
-        except Exception:
+        candidate = _evaluate_direct_respiration(
+            label,
+            signal,
+            physiological_fs[label],
+            group_name,
+        )
+        if candidate is None:
+            continue
+        if candidate.quality <= best_quality[group_name]:
             continue
 
-        peakedness_metric = _compute_peakedness_metric(hat_br)
-        if not np.isfinite(peakedness_metric):
-            continue
-
-        quality = _compute_resp_quality(used, hat_br)
-        if quality <= best_quality[group_name]:
-            continue
-
-        best_quality[group_name] = quality
-        results[f'{group_name}_Peakedness'] = peakedness_metric
+        best_quality[group_name] = candidate.quality
+        results[f'{group_name}_Peakedness'] = candidate.peakedness
 
     return np.array([results[name] for name in RESP_SEGMENT_FEATURE_NAMES], dtype=np.float32)

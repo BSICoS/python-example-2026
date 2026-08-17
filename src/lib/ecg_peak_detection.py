@@ -1,8 +1,25 @@
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks
 
 
-def pan_tompkins(ecg, fs, gr=0):
+@dataclass(frozen=True)
+class PanTompkinsTrace:
+    """Intermediate arrays from the legacy detector used by the viewer."""
+
+    ecg_centered: np.ndarray
+    ecg_bandpassed: np.ndarray
+    derivative: np.ndarray
+    derivative_squared: np.ndarray
+    envelope: np.ndarray
+    candidate_locations: np.ndarray
+    r_amplitudes: np.ndarray
+    r_locations: np.ndarray
+    delay: int
+
+
+def pan_tompkins(ecg, fs, gr=0, return_trace=False):
     fs = int(round(float(fs)))
     if fs <= 0:
         raise ValueError('Sampling frequency must be positive.')
@@ -184,4 +201,22 @@ def pan_tompkins(ecg, fs, gr=0):
         THR_SIG1 = NOISE_LEV1 + 0.25 * abs(SIG_LEV1 - NOISE_LEV1)
         THR_NOISE1 = 0.5 * THR_SIG1
 
-    return np.array(qrs_amp_raw), np.array(qrs_i_raw), delay
+    trace = PanTompkinsTrace(
+        ecg_centered=np.asarray(ecg, dtype=float),
+        ecg_bandpassed=np.asarray(ecg_h, dtype=float),
+        derivative=np.asarray(ecg_d, dtype=float),
+        derivative_squared=np.asarray(ecg_s, dtype=float),
+        envelope=np.asarray(ecg_m, dtype=float),
+        candidate_locations=np.asarray(locs, dtype=int),
+        r_amplitudes=np.asarray(qrs_amp_raw, dtype=float),
+        r_locations=np.asarray(qrs_i_raw, dtype=int),
+        delay=delay,
+    )
+    if return_trace:
+        return trace
+
+    return (
+        trace.r_amplitudes,
+        trace.r_locations,
+        trace.delay,
+    )

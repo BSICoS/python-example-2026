@@ -1,8 +1,28 @@
 import numpy as np
 
+
 def remove_ectopic_beats(nn_intervals, window_size, threshold):
+    """Replace locally deviant intervals and return the legacy outputs."""
+
+    nn_corrected, ectopic_perc, _ = remove_ectopic_beats_with_mask(
+        nn_intervals,
+        window_size,
+        threshold,
+    )
+    return nn_corrected, ectopic_perc
+
+
+def remove_ectopic_beats_with_mask(nn_intervals, window_size, threshold):
+    """Replace locally deviant intervals and expose the affected positions.
+
+    This is the exact legacy cleaning algorithm used by the current feature
+    pipeline. The additional mask exists only so that the inspection viewer
+    can show which intervals were changed.
+    """
+
     nn_intervals = np.asarray(nn_intervals).flatten()
     nn_corrected = nn_intervals.copy()
+    ectopic_mask = np.zeros(nn_intervals.shape, dtype=bool)
 
     half_win = window_size // 2
     ectopic_count = 0
@@ -28,6 +48,7 @@ def remove_ectopic_beats(nn_intervals, window_size, threshold):
 
         if abs(nn_intervals[index] - med_val) > threshold * med_val:
             nn_corrected[index] = med_val
+            ectopic_mask[index] = True
             ectopic_count += 1
 
     if valid_count > 0:
@@ -35,4 +56,4 @@ def remove_ectopic_beats(nn_intervals, window_size, threshold):
     else:
         ectopic_perc = np.nan
 
-    return nn_corrected, ectopic_perc
+    return nn_corrected, ectopic_perc, ectopic_mask
