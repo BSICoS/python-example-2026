@@ -1,12 +1,14 @@
 from contextlib import redirect_stdout
 import io
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from sklearn.base import clone
 
 from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator, FoldSplit
 from src.pipeline.preprocessing import CorrelationAwarePreprocessor
+from src.pipeline.training import _fit_ensemble
 
 
 class _RecordingPreprocessor(CorrelationAwarePreprocessor):
@@ -184,11 +186,49 @@ class PreprocessingLeakageTests(unittest.TestCase):
                 modality_presence_indices=feature_indices,
             )
 
-        route_metrics = result.metrics['model_route_metrics']
-        self.assertEqual(route_metrics['ecg']['n_records'], 4)
-        self.assertEqual(route_metrics['eeg']['n_records'], 4)
-        self.assertEqual(route_metrics['ecg']['n_positive'], 2)
-        self.assertEqual(route_metrics['eeg']['n_negative'], 2)
+        self.assertEqual(result.metrics['model_route_counts'], {'ecg': 4, 'eeg': 4})
+
+        eligible_metrics = result.metrics['model_eligible_oof_metrics']
+        self.assertEqual(eligible_metrics['ecg']['n_records'], 8)
+        self.assertEqual(eligible_metrics['eeg']['n_records'], 8)
+
+    def test_each_route_trains_only_with_its_required_modalities(self):
+        features = np.array([
+            [20.0, 1.0, np.nan, np.nan],
+            [21.0, 1.0, 1.0, np.nan],
+            [22.0, 1.0, 1.0, 1.0],
+            [23.0, 1.0, 1.0, 1.0],
+        ], dtype=np.float32)
+        labels = np.array([0, 1, 0, 1], dtype=np.int32)
+        feature_indices = {
+            'demographics': np.array([0], dtype=np.int32),
+            'ecg': np.array([1], dtype=np.int32),
+            'eeg': np.array([2], dtype=np.int32),
+            'resp': np.array([3], dtype=np.int32),
+            'all': np.arange(4, dtype=np.int32),
+        }
+        fitted_labels = []
+
+        def record_fit(features, route_labels, consensus_params=None):
+            fitted_labels.append(np.asarray(route_labels, dtype=np.int32))
+            return _FeatureProbabilityModel()
+
+        with patch('src.pipeline.training._fit_model', side_effect=record_fit):
+            models = _fit_ensemble(
+                features,
+                labels,
+                feature_indices,
+                modality_presence_indices={
+                    name: feature_indices[name]
+                    for name in ('ecg', 'eeg', 'resp')
+                },
+            )
+
+        self.assertEqual(models['ecg']['n_train'], 4)
+        self.assertEqual(models['eeg']['n_train'], 3)
+        self.assertEqual(models['ecg_eeg']['n_train'], 3)
+        self.assertEqual(models['all']['n_train'], 2)
+        self.assertEqual(len(fitted_labels), len(models))
 
 
 if __name__ == '__main__':

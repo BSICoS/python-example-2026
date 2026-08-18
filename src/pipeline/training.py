@@ -280,16 +280,82 @@ def _get_combined_model_indices(feature_indices):
     return combined_map
 
 
-# Entrena múltiples modelos XGBoost en paralelo incluyendo combinaciones de señales con demografía
-def _fit_ensemble(feature_matrix, labels, feature_indices, consensus_params=None):
+def _get_model_modalities(model_name):
+    return ENSEMBLE_MODALITIES if model_name == 'all' else tuple(model_name.split('_'))
+
+
+def _get_route_presence_mask(feature_matrix, model_name, modality_presence_indices):
+    mask = np.ones(feature_matrix.shape[0], dtype=bool)
+    for modality in _get_model_modalities(model_name):
+        modality_indices = np.asarray(modality_presence_indices[modality], dtype=np.int32)
+        mask &= np.any(np.isfinite(feature_matrix[:, modality_indices]), axis=1)
+    return mask
+
+
+def _get_route_categorical_indices(raw_indices, categorical_indices):
+    categorical_set = set(np.asarray(categorical_indices or [], dtype=np.int32).tolist())
+    return [
+        position for position, raw_index in enumerate(raw_indices)
+        if int(raw_index) in categorical_set
+    ]
+
+
+def _fit_route_model(route_features, route_labels, raw_indices, categorical_indices, consensus_params):
+    route_preprocessor = build_preprocessor(
+        len(route_labels),
+        _get_route_categorical_indices(raw_indices, categorical_indices),
+    )
+    processed_features = np.asarray(
+        route_preprocessor.fit_transform(route_features),
+        dtype=np.float32,
+    )
+    return {
+        'model': _fit_model(processed_features, route_labels, consensus_params),
+        'preprocessor': route_preprocessor,
+        'raw_indices': np.asarray(raw_indices, dtype=np.int32),
+        'n_train': int(len(route_labels)),
+        'n_positive_train': int(np.sum(route_labels == 1)),
+        'n_negative_train': int(np.sum(route_labels == 0)),
+    }
+
+
+# Entrena cada ruta sólo con pacientes que aportan todas sus modalidades requeridas.
+def _fit_ensemble(
+    feature_matrix,
+    labels,
+    feature_indices,
+    consensus_params=None,
+    modality_presence_indices=None,
+    categorical_indices=None,
+):
     models = {}
     combined_indices = _get_combined_model_indices(feature_indices)
+    if modality_presence_indices is None:
+        modality_presence_indices = feature_indices
 
-    for model_name, indices in combined_indices.items():
-        if indices.size == 0:
+    for model_name, raw_indices in combined_indices.items():
+        route_mask = _get_route_presence_mask(
+            feature_matrix,
+            model_name,
+            modality_presence_indices,
+        )
+        route_labels = labels[route_mask]
+        if np.unique(route_labels).size < 2:
+            print(
+                f"  Skipping {model_name}: its available-signal training subset "
+                "does not contain both classes."
+            )
             continue
-        models[model_name] = _fit_model(
-            feature_matrix[:, indices], labels, consensus_params
+
+        route_features = feature_matrix[route_mask][:, raw_indices]
+        if raw_indices.size == 0:
+            continue
+        models[model_name] = _fit_route_model(
+            route_features,
+            route_labels,
+            raw_indices,
+            categorical_indices,
+            consensus_params,
         )
         
     return models
@@ -308,7 +374,7 @@ def _select_ensemble_model_name(raw_feature_vector, models, modality_presence_in
         and _has_modality_signal(raw_feature_vector, modality_presence_indices[modality])
     }
 
-    model_by_modalities = {
+    candidate_models = {
         frozenset(('ecg', 'eeg', 'resp')): 'all',
         frozenset(('ecg', 'eeg')): 'ecg_eeg',
         frozenset(('ecg', 'resp')): 'ecg_resp',
@@ -317,8 +383,18 @@ def _select_ensemble_model_name(raw_feature_vector, models, modality_presence_in
         frozenset(('eeg',)): 'eeg',
         frozenset(('resp',)): 'resp',
     }
-    target_model = model_by_modalities.get(frozenset(active_modalities), 'all')
-    return target_model if target_model in models else 'all'
+    for modalities, model_name in candidate_models.items():
+        if modalities == active_modalities and model_name in models:
+            return model_name
+
+    available_candidates = [
+        (len(modalities), model_name)
+        for modalities, model_name in candidate_models.items()
+        if modalities.issubset(active_modalities) and model_name in models
+    ]
+    if available_candidates:
+        return max(available_candidates)[1]
+    return 'all' if 'all' in models else next(iter(models))
 
 
 def select_ensemble_model_names(model_bundle, feature_matrix):
@@ -334,10 +410,7 @@ def select_ensemble_model_names(model_bundle, feature_matrix):
     ], dtype=object)
 
 def predict_ensemble_probabilities(model_bundle, feature_matrix):
-    raw_feature_matrix, processed_feature_matrix = prepare_feature_matrix(
-        feature_matrix,
-        preprocessor=model_bundle.get('preprocessor'),
-    )
+    raw_feature_matrix, _ = prepare_feature_matrix(feature_matrix)
 
     models = model_bundle['models']
     
@@ -360,18 +433,57 @@ def predict_ensemble_probabilities(model_bundle, feature_matrix):
     
     probabilities = np.zeros(raw_feature_matrix.shape[0], dtype=np.float32)
     for row_index, raw_feature_vector in enumerate(raw_feature_matrix):
-        processed_feature_vector = processed_feature_matrix[row_index]
         target_model = _select_ensemble_model_name(
             raw_feature_vector,
             models,
             modality_presence_indices,
         )
 
-        target_indices = combined_indices[target_model]
-        model_features = processed_feature_vector[target_indices].reshape(1, -1)
-        probabilities[row_index] = float(models[target_model].predict_proba(model_features)[0][1])
+        route_model = models[target_model]
+        if isinstance(route_model, dict):
+            route_features = raw_feature_vector[route_model['raw_indices']].reshape(1, -1)
+            processed_features = route_model['preprocessor'].transform(route_features)
+            probabilities[row_index] = float(
+                route_model['model'].predict_proba(processed_features)[0][1]
+            )
+        else:
+            _, processed_feature_matrix = prepare_feature_matrix(
+                raw_feature_matrix,
+                preprocessor=model_bundle.get('preprocessor'),
+            )
+            target_indices = combined_indices[target_model]
+            model_features = processed_feature_matrix[row_index, target_indices].reshape(1, -1)
+            probabilities[row_index] = float(route_model.predict_proba(model_features)[0][1])
 
     return probabilities
+
+
+def predict_route_model_probabilities(model_bundle, feature_matrix):
+    raw_feature_matrix, _ = prepare_feature_matrix(feature_matrix)
+    probabilities_by_model = {}
+    modality_presence_indices = {
+        name: np.asarray(indices, dtype=np.int32)
+        for name, indices in model_bundle['modality_presence_indices'].items()
+    }
+    for model_name, route_model in model_bundle['models'].items():
+        if not isinstance(route_model, dict):
+            continue
+        eligible_mask = _get_route_presence_mask(
+            raw_feature_matrix,
+            model_name,
+            modality_presence_indices,
+        )
+        model_probabilities = np.full(len(raw_feature_matrix), np.nan, dtype=np.float32)
+        if not np.any(eligible_mask):
+            probabilities_by_model[model_name] = model_probabilities
+            continue
+        route_features = raw_feature_matrix[eligible_mask][:, route_model['raw_indices']]
+        processed_features = route_model['preprocessor'].transform(route_features)
+        model_probabilities[eligible_mask] = route_model['model'].predict_proba(
+            processed_features
+        )[:, 1]
+        probabilities_by_model[model_name] = model_probabilities
+    return probabilities_by_model
 
 #define el umbral de decisión para convertir probabilidades en etiquetas binarias. Si la probabilidad es mayor o igual al umbral, se asigna la etiqueta 1 (positivo), de lo contrario, se asigna la etiqueta 0 (negativo).
 def predict_ensemble_labels(model_bundle, feature_matrix):
@@ -381,7 +493,13 @@ def predict_ensemble_labels(model_bundle, feature_matrix):
     return labels, probabilities
 
 
-def _evaluate_and_display_models(models, processed_features, labels, combined_indices, threshold=0.5):
+def _evaluate_and_display_models(
+    models,
+    feature_matrix,
+    labels,
+    modality_presence_indices,
+    threshold=0.5,
+):
     """
     Computes and displays evaluation metrics for all trained models on the dataset.
     """
@@ -391,26 +509,32 @@ def _evaluate_and_display_models(models, processed_features, labels, combined_in
     print(f"{'Model Name':<25} | {'AUROC-Age':<10} | {'ROC-AUC':<10} | {'Accuracy':<10} | {'Sensitivity':<11} | {'Specificity':<11}")
     print("-" * 85)
 
-    ages = processed_features[:, AGE_FEATURE_INDEX].ravel() if processed_features.shape[1] > AGE_FEATURE_INDEX else np.zeros(len(labels))
-    
     metrics_summary = {}
 
-    for model_name, model in models.items():
-        indices = combined_indices[model_name]
-        if indices.size == 0:
+    for model_name, route_model in models.items():
+        if not isinstance(route_model, dict):
             continue
-            
-        sub_features = processed_features[:, indices]
-        probs = model.predict_proba(sub_features)[:, 1]
+
+        route_mask = _get_route_presence_mask(
+            feature_matrix,
+            model_name,
+            modality_presence_indices,
+        )
+        route_labels = labels[route_mask]
+        route_features = feature_matrix[route_mask][:, route_model['raw_indices']]
+        processed_features = route_model['preprocessor'].transform(route_features)
+        probs = route_model['model'].predict_proba(processed_features)[:, 1]
         preds = (probs >= threshold).astype(np.int32)
+        age_position = np.flatnonzero(route_model['raw_indices'] == 0)
+        ages = route_features[:, int(age_position[0])] if age_position.size else np.zeros(len(route_labels))
         
         # Calculate evaluation metrics
-        auroc_age = compute_auroc_age(labels, probs, ages, gap=2)
-        roc_auc = roc_auc_score(labels, probs) if len(np.unique(labels)) > 1 else 0.0
-        acc = accuracy_score(labels, preds)
-        sens = recall_score(labels, preds, zero_division=0)
+        auroc_age = compute_auroc_age(route_labels, probs, ages, gap=2)
+        roc_auc = roc_auc_score(route_labels, probs) if len(np.unique(route_labels)) > 1 else 0.0
+        acc = accuracy_score(route_labels, preds)
+        sens = recall_score(route_labels, preds, zero_division=0)
         
-        cm = confusion_matrix(labels, preds, labels=[0, 1])
+        cm = confusion_matrix(route_labels, preds, labels=[0, 1])
         tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
         spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
 
@@ -534,6 +658,8 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         fit_ensemble=_fit_ensemble,
         predict_probabilities=predict_ensemble_probabilities,
         select_model_names=select_ensemble_model_names,
+        predict_model_probabilities=predict_route_model_probabilities,
+        fit_ensemble_handles_preprocessing=True,
         search_age_feature_index=raw_age_feature_index,
         search_age_feature_scale=1.0,
         search_age_feature_offset=0.0,
@@ -553,8 +679,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     consensus = cv_result.consensus_params
     cv_metrics = cv_result.metrics
 
-    # Fit preprocessing on all samples only after CV, for the deployable final model.
-    print("\n[INFO] Fitting final preprocessing on all training data...")
+    # This preprocessor is retained for feature exports only. Each deployed route
+    # fits and stores its own preprocessor below.
+    print("\n[INFO] Fitting feature-export preprocessing on all training data...")
     preprocessor = build_preprocessor(
         len(labels),
         categorical_indices if categorical_indices else None,
@@ -596,19 +723,26 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     numerical_age_position = int(numerical_age_positions[0])
     AGE_FEATURE_SCALE = float(preprocessor.scaler.scale_[numerical_age_position])
     AGE_FEATURE_OFFSET = float(preprocessor.scaler.mean_[numerical_age_position])
-    combined_indices = _get_combined_model_indices(selected_feature_indices)
+    combined_indices = _get_combined_model_indices(feature_indices)
 
 
-    # --- Step 2: Fit final models on ALL data usando el consenso ---
-    print("Fitting final ensemble on all training data with consensus hyperparameters...")
-    models = _fit_ensemble(processed_features, labels, selected_feature_indices, consensus_params=consensus)
+    # --- Step 2: Fit each model on patients with its required signal modalities ---
+    print("Fitting signal-specific ensemble routes with consensus hyperparameters...")
+    models = _fit_ensemble(
+        features,
+        labels,
+        feature_indices,
+        consensus_params=consensus,
+        modality_presence_indices=modality_presence_indices,
+        categorical_indices=categorical_indices,
+    )
 
     # --- Step 3: Compute & Display Metrics for All Trained Models ---
     training_metrics = _evaluate_and_display_models(
         models=models,
-        processed_features=processed_features,
+        feature_matrix=features,
         labels=labels,
-        combined_indices=combined_indices,
+        modality_presence_indices=modality_presence_indices,
         threshold=threshold,
     )
 
@@ -639,7 +773,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         'selected_raw_feature_indices': selected_raw_feature_indices.tolist(),
         'feature_indices': {
             name: indices.tolist()
-            for name, indices in selected_feature_indices.items()
+            for name, indices in feature_indices.items()
             if name in {'all', 'resp', 'eeg', 'ecg', 'demographics'}
         },
         'combined_indices': {

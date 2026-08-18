@@ -51,6 +51,8 @@ class EnsembleCrossValidator:
         fit_ensemble: Callable[..., Any],
         predict_probabilities: Callable[..., Any],
         select_model_names: Optional[Callable[..., Any]] = None,
+        predict_model_probabilities: Optional[Callable[..., Any]] = None,
+        fit_ensemble_handles_preprocessing: bool = False,
         search_age_feature_index: Optional[int] = None,
         search_age_feature_scale: float = 1.0,
         search_age_feature_offset: float = 0.0,
@@ -63,6 +65,8 @@ class EnsembleCrossValidator:
         self.fit_ensemble = fit_ensemble
         self.predict_probabilities = predict_probabilities
         self.select_model_names = select_model_names
+        self.predict_model_probabilities = predict_model_probabilities
+        self.fit_ensemble_handles_preprocessing = fit_ensemble_handles_preprocessing
         self.search_age_feature_index = search_age_feature_index
         self.search_age_feature_scale = float(search_age_feature_scale)
         self.search_age_feature_offset = float(search_age_feature_offset)
@@ -328,9 +332,13 @@ class EnsembleCrossValidator:
             X_train, X_val = features[split.train_idx], features[split.validation_idx]
             y_train, y_val = labels[split.train_idx], labels[split.validation_idx]
 
-            # --- CORRECCIÓN: Soporte para variables globales fijas ---
-            fold_preprocessor = self.build_preprocessor(len(y_train), categorical_indices)
-            
+            fold_preprocessor = None
+            if self.fit_ensemble_handles_preprocessing:
+                X_train_proc = np.asarray(X_train, dtype=np.float32)
+                remapped_feature_indices = feature_indices
+            else:
+                fold_preprocessor = self.build_preprocessor(len(y_train), categorical_indices)
+
             if fold_preprocessor is not None:
                 # Flujo Original dinámico por fold
                 X_train_proc = np.asarray(fold_preprocessor.fit_transform(X_train), dtype=np.float32)
@@ -338,17 +346,25 @@ class EnsembleCrossValidator:
                 print(
                     f"    Correlation selector kept {X_train_proc.shape[1]}/{X_train.shape[1]} features"
                 )
-            else:
+            elif not self.fit_ensemble_handles_preprocessing:
                 # Flujo con Variables fijas pre-calculadas afuera
                 X_train_proc = np.asarray(X_train, dtype=np.float32)
                 remapped_feature_indices = feature_indices # Ya vienen mapeadas de afuera
                 print(f"    Variables fijas detectadas. Usando {X_train_proc.shape[1]} características fijas.")
 
+            fit_kwargs = {
+                'consensus_params': params_by_fold[int(split.fold_index)],
+            }
+            if self.fit_ensemble_handles_preprocessing:
+                fit_kwargs.update({
+                    'modality_presence_indices': modality_presence_indices,
+                    'categorical_indices': categorical_indices,
+                })
             fold_models = self.fit_ensemble(
                 X_train_proc,
                 y_train,
                 remapped_feature_indices,
-                consensus_params=params_by_fold[int(split.fold_index)],
+                **fit_kwargs,
             )
             fold_bundle = {
                 'models': fold_models,
@@ -371,23 +387,29 @@ class EnsembleCrossValidator:
                         'Model selector returned a different number of names than validation records.'
                     )
 
-                X_val_proc = (
-                    np.asarray(fold_preprocessor.transform(X_val), dtype=np.float32)
-                    if fold_preprocessor is not None
-                    else np.asarray(X_val, dtype=np.float32)
-                )
                 routed_model_oof['model_names'][split.validation_idx] = model_names
-                for model_name, model in fold_models.items():
-                    model_indices = self._get_model_feature_indices(
-                        model_name,
-                        remapped_feature_indices,
+                if self.predict_model_probabilities is not None:
+                    probabilities_by_model = self.predict_model_probabilities(fold_bundle, X_val)
+                else:
+                    X_val_proc = (
+                        np.asarray(fold_preprocessor.transform(X_val), dtype=np.float32)
+                        if fold_preprocessor is not None
+                        else np.asarray(X_val, dtype=np.float32)
                     )
-                    if model_indices.size == 0:
-                        continue
-                    model_probabilities = np.asarray(
-                        model.predict_proba(X_val_proc[:, model_indices])[:, 1],
-                        dtype=np.float32,
-                    )
+                    probabilities_by_model = {}
+                    for model_name, model in fold_models.items():
+                        model_indices = self._get_model_feature_indices(
+                            model_name,
+                            remapped_feature_indices,
+                        )
+                        if model_indices.size == 0:
+                            continue
+                        probabilities_by_model[model_name] = model.predict_proba(
+                            X_val_proc[:, model_indices]
+                        )[:, 1]
+
+                for model_name, model_probabilities in probabilities_by_model.items():
+                    model_probabilities = np.asarray(model_probabilities, dtype=np.float32)
                     if model_name not in routed_model_oof['probabilities']:
                         routed_model_oof['probabilities'][model_name] = np.full(
                             len(labels),
@@ -438,16 +460,20 @@ class EnsembleCrossValidator:
         )
         self._print_metrics("  OOF metrics after calibration:", oof_calibrated_metrics)
 
-        model_route_metrics = self._compute_routed_model_metrics(
+        model_route_counts = self._count_selected_model_routes(routed_model_oof)
+        if model_route_counts:
+            print(f"  Selected model routes: {model_route_counts}")
+
+        model_eligible_oof_metrics = self._compute_model_eligible_oof_metrics(
             labels,
             ages,
             routed_model_oof,
             threshold,
         )
-        for model_name, route_metrics in model_route_metrics.items():
+        for model_name, model_metrics in model_eligible_oof_metrics.items():
             self._print_metrics(
-                f"  Routed OOF metrics ({model_name}, n={route_metrics['n_records']}):",
-                route_metrics,
+                f"  Model OOF metrics ({model_name}, n={model_metrics['n_records']}):",
+                model_metrics,
             )
 
         metrics = {
@@ -461,7 +487,8 @@ class EnsembleCrossValidator:
             'fold_metric_summary': fold_metric_summary,
             'oof_default_threshold_metrics': oof_default_metrics,
             'oof_calibrated_metrics': oof_calibrated_metrics,
-            'model_route_metrics': model_route_metrics,
+            'model_route_counts': model_route_counts,
+            'model_eligible_oof_metrics': model_eligible_oof_metrics,
         }
         return CrossValidationResult(
             threshold=threshold,
@@ -480,28 +507,39 @@ class EnsembleCrossValidator:
             )
         return np.asarray(sorted(indices), dtype=np.int32)
 
-    def _compute_routed_model_metrics(self, labels, ages, routed_model_oof, threshold):
+    def _count_selected_model_routes(self, routed_model_oof):
         model_names = np.asarray(routed_model_oof['model_names'], dtype=object)
+        selected_model_names = [
+            str(model_name)
+            for model_name in model_names
+            if model_name is not None
+        ]
+        return {
+            model_name: selected_model_names.count(model_name)
+            for model_name in sorted(set(selected_model_names))
+        }
+
+    def _compute_model_eligible_oof_metrics(self, labels, ages, routed_model_oof, threshold):
         metrics_by_model = {}
 
         for model_name, probabilities in routed_model_oof['probabilities'].items():
-            selected_mask = model_names == model_name
-            selected_labels = labels[selected_mask]
-            selected_probabilities = np.asarray(probabilities, dtype=np.float32)[selected_mask]
-            selected_ages = None if ages is None else ages[selected_mask]
-            if selected_labels.size == 0:
+            probabilities = np.asarray(probabilities, dtype=np.float32)
+            eligible_mask = np.isfinite(probabilities)
+            eligible_labels = labels[eligible_mask]
+            if eligible_labels.size == 0:
                 continue
 
+            eligible_ages = None if ages is None else ages[eligible_mask]
             metrics = self._compute_evaluation_metrics(
-                selected_labels,
-                selected_probabilities,
+                eligible_labels,
+                probabilities[eligible_mask],
                 threshold=threshold,
-                ages=selected_ages,
+                ages=eligible_ages,
             )
             metrics.update({
-                'n_records': int(selected_labels.size),
-                'n_positive': int(np.sum(selected_labels == 1)),
-                'n_negative': int(np.sum(selected_labels == 0)),
+                'n_records': int(eligible_labels.size),
+                'n_positive': int(np.sum(eligible_labels == 1)),
+                'n_negative': int(np.sum(eligible_labels == 0)),
             })
             metrics_by_model[model_name] = metrics
 
