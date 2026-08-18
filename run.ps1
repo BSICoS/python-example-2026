@@ -12,6 +12,9 @@ param(
         "train-dev",
         "run-dev",
         "eval-dev",
+        "ablation-dev",
+        "ablation-seeds-dev",
+        "ablation-hospitals-dev",
         "clean"
     )]
     [string]$Command
@@ -283,6 +286,54 @@ function Eval-Dev {
     }
 }
 
+function Ablation-Dev {
+
+    $CODE_PATH = Get-AbsolutePath "."
+    $FULL_DATA = Get-AbsolutePath $TRAIN_DATA_REL
+    $FEATURE_CACHE = Join-Path $CODE_PATH $FEATURE_CACHE_REL
+
+    Ensure-Directory $FEATURE_CACHE
+
+    $GPU_ARGS = Get-DockerGpuArgs
+    docker run --rm $GPU_ARGS `
+        -v "${CODE_PATH}:/challenge" `
+        -v "${FULL_DATA}:/challenge/training_data:ro" `
+        $IMAGE_NAME `
+        python ablation.py -d training_data
+}
+
+    function Ablation-Seeds-Dev {
+
+        $CODE_PATH = Get-AbsolutePath "."
+        $FULL_DATA = Get-AbsolutePath $TRAIN_DATA_REL
+        $FEATURE_CACHE = Join-Path $CODE_PATH $FEATURE_CACHE_REL
+
+        Ensure-Directory $FEATURE_CACHE
+
+        $GPU_ARGS = Get-DockerGpuArgs
+        docker run --rm $GPU_ARGS `
+        -v "${CODE_PATH}:/challenge" `
+        -v "${FULL_DATA}:/challenge/training_data:ro" `
+        $IMAGE_NAME `
+        python ablation.py -d training_data --seeds 1 2 3 4 5
+    }
+
+    function Ablation-Hospitals-Dev {
+
+        $CODE_PATH = Get-AbsolutePath "."
+        $FULL_DATA = Get-AbsolutePath $TRAIN_DATA_REL
+        $FEATURE_CACHE = Join-Path $CODE_PATH $FEATURE_CACHE_REL
+
+        Ensure-Directory $FEATURE_CACHE
+
+        $GPU_ARGS = Get-DockerGpuArgs
+        docker run --rm $GPU_ARGS `
+        -v "${CODE_PATH}:/challenge" `
+        -v "${FULL_DATA}:/challenge/training_data:ro" `
+        $IMAGE_NAME `
+        python ablation.py -d training_data --leave-one-hospital-out
+    }
+
 function Clean-All {
 
     Remove-Item -Recurse -Force $MODEL_FULL_REL -ErrorAction SilentlyContinue
@@ -310,6 +361,9 @@ switch ($Command) {
     "train-dev"   { Train-Dev }
     "run-dev"     { Run-Dev }
     "eval-dev"    { Eval-Dev }
+    "ablation-dev" { Ablation-Dev }
+    "ablation-seeds-dev" { Ablation-Seeds-Dev }
+    "ablation-hospitals-dev" { Ablation-Hospitals-Dev }
     "clean"       { Clean-All }
 
 }

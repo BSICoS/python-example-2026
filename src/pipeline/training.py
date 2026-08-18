@@ -1,6 +1,8 @@
 import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import redirect_stdout
+import io
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, f1_score, confusion_matrix
 import numpy as np
@@ -264,20 +266,20 @@ def _get_combined_model_indices(feature_indices):
                 combined.update(np.asarray(feature_indices[key], dtype=np.int32).tolist())
         return np.array(sorted(list(combined)), dtype=np.int32)
 
-    combined_map = {
-        # Single signal + Demographics (3 models)
-        'ecg': _combine(['ecg']),
-        'eeg': _combine(['eeg']),
-        'resp': _combine(['resp']),
-        
-        # Dual ensembles + Demographics (3 ensemble models)
-        'ecg_eeg': _combine(['ecg', 'eeg']),
-        'ecg_resp': _combine(['ecg', 'resp']),
-        'eeg_resp': _combine(['eeg', 'resp']),
-        
-        # All signals + Demographics (1 complete ensemble model)
-        'all': _combine(['ecg', 'eeg', 'resp'])
+    available_modalities = {
+        modality for modality in ENSEMBLE_MODALITIES if modality in feature_indices
     }
+    combinations = (
+        ('ecg',), ('eeg',), ('resp',),
+        ('ecg', 'eeg'), ('ecg', 'resp'), ('eeg', 'resp'),
+        ('ecg', 'eeg', 'resp'),
+    )
+    combined_map = {}
+    for modalities in combinations:
+        if not set(modalities).issubset(available_modalities):
+            continue
+        model_name = 'all' if len(modalities) == len(ENSEMBLE_MODALITIES) else '_'.join(modalities)
+        combined_map[model_name] = _combine(modalities)
     return combined_map
 
 
@@ -553,7 +555,7 @@ def _evaluate_and_display_models(
     return metrics_summary
 
 
-def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None):
+def _collect_training_features(data_folder, verbose, csv_path):
     patient_data_file = os.path.join(data_folder, DEMOGRAPHICS_FILE)
     patient_metadata_list = find_patients(patient_data_file)
     demographics_cache, diagnosis_cache = build_training_metadata_cache(patient_data_file)
@@ -570,30 +572,19 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     with ThreadPoolExecutor(max_workers=MAX_TRAIN_WORKERS) as executor:
         futures = {
             executor.submit(
-                process_training_record,
-                record,
-                data_folder,
-                demographics_cache,
-                diagnosis_cache,
-                csv_path,
+                process_training_record, record, data_folder, demographics_cache,
+                diagnosis_cache, csv_path,
             ): index
             for index, record in enumerate(patient_metadata_list)
         }
         ordered_results = [None] * num_records
-
-        pbar = tqdm(
-            total=num_records,
-            desc='Extracting Features',
-            unit='record',
-            disable=not verbose,
-        )
+        pbar = tqdm(total=num_records, desc='Extracting Features', unit='record', disable=not verbose)
         for future in as_completed(futures):
             result = future.result()
             ordered_results[futures[future]] = result
             if verbose:
                 pbar.set_postfix({'patient': result[0]['patient_id']})
             pbar.update(1)
-
         pbar.close()
 
     for result in ordered_results:
@@ -605,21 +596,318 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         if message is not None:
             tqdm.write(f"  ! {message}")
             continue
-
         features.append(feature_vector)
         labels.append(label)
         metadata_rows.append(metadata)
 
     if extracted_feature_count:
-        tqdm.write(
-            f"  ! excessive_vlf_power affected {excessive_vlf_patient_count} patients."
-        )
+        tqdm.write(f"  ! excessive_vlf_power affected {excessive_vlf_patient_count} patients.")
 
     features = np.asarray(features, dtype=np.float32)
     labels = np.asarray(labels, dtype=np.int32)
-
     if features.size == 0 or features.ndim != 2 or features.shape[0] == 0:
         raise ValueError('No valid training samples were extracted. Review feature extraction logs for the skipped records.')
+    return features, labels, metadata_rows
+
+
+def _get_modality_comparison_feature_sets(feature_indices):
+    return {
+        'EEG': {'eeg': np.asarray(feature_indices['eeg'], dtype=np.int32)},
+        'ECG + EEG': {
+            'ecg': np.asarray(feature_indices['ecg'], dtype=np.int32),
+            'eeg': np.asarray(feature_indices['eeg'], dtype=np.int32),
+        },
+        'ALL': {
+            'ecg': np.asarray(feature_indices['ecg'], dtype=np.int32),
+            'eeg': np.asarray(feature_indices['eeg'], dtype=np.int32),
+            'resp': np.asarray(feature_indices['resp'], dtype=np.int32),
+        },
+    }
+
+
+def _run_modality_comparisons(
+    features,
+    labels,
+    feature_indices,
+    modality_presence_indices,
+    categorical_indices,
+    cv_runner,
+    site_groups=None,
+):
+    results = {}
+    for name, available_feature_indices in _get_modality_comparison_feature_sets(feature_indices).items():
+        required_modalities = tuple(available_feature_indices)
+        selected_indices = np.unique(np.concatenate([
+            available_feature_indices[modality]
+            for modality in required_modalities
+        ])).astype(np.int32)
+        selected_index_positions = {
+            int(raw_index): position
+            for position, raw_index in enumerate(selected_indices)
+        }
+        remapped_feature_indices = {
+            modality: np.asarray([
+                selected_index_positions[int(raw_index)]
+                for raw_index in indices
+            ], dtype=np.int32)
+            for modality, indices in available_feature_indices.items()
+        }
+        remapped_presence_indices = {
+            modality: np.asarray([
+                selected_index_positions[int(raw_index)]
+                for raw_index in modality_presence_indices[modality]
+                if int(raw_index) in selected_index_positions
+            ], dtype=np.int32)
+            for modality in required_modalities
+        }
+        eligible_mask = np.ones(len(labels), dtype=bool)
+        for modality in required_modalities:
+            eligible_mask &= np.any(np.isfinite(features[:, modality_presence_indices[modality]]), axis=1)
+
+        result = cv_runner.run(
+            features[eligible_mask][:, selected_indices], labels[eligible_mask], remapped_feature_indices,
+            modality_presence_indices=remapped_presence_indices,
+            categorical_indices=[
+                selected_index_positions[index]
+                for index in (categorical_indices or [])
+                if index in selected_index_positions
+            ] or None,
+            site_groups=None if site_groups is None else site_groups[eligible_mask],
+        )
+        results[name] = (int(np.sum(eligible_mask)), result)
+    return results
+
+
+def _format_modality_comparison(results):
+    def metric(value):
+        return 'nan' if value is None or not np.isfinite(value) else f'{value:.3f}'
+
+    lines = ['Modality comparison']
+    oof_scores = {}
+    for name in ('EEG', 'ECG + EEG', 'ALL'):
+        sample_count, result = results[name]
+        metrics = result.metrics
+        summary = metrics['fold_metric_summary']['age_conditioned_auroc']
+        oof_score = metrics['oof_calibrated_metrics']['age_conditioned_auroc']
+        oof_scores[name] = oof_score
+        lines.extend([
+            '', name, f'  N: {sample_count}',
+            f"  Mean fold Age-AUROC: {metric(summary['mean'])} +/- {metric(summary['std'])}",
+            f'  OOF Age-AUROC: {metric(oof_score)}',
+        ])
+    lines.extend([
+        '', 'Differences:',
+        f"  ECG+EEG - EEG: {metric(oof_scores['ECG + EEG'] - oof_scores['EEG'])}",
+        f"  ALL - ECG+EEG: {metric(oof_scores['ALL'] - oof_scores['ECG + EEG'])}",
+        f"  ALL - EEG: {metric(oof_scores['ALL'] - oof_scores['EEG'])}",
+    ])
+    return '\n'.join(lines)
+
+
+def _build_modality_comparison_runner(
+    feature_names,
+    random_state=CV_RANDOM_STATE,
+    use_site_grouped_cv=False,
+):
+    cv_config = CrossValidationConfig(
+        use_site_grouped_cv=use_site_grouped_cv,
+        optimize_hyperparameter_search=OPTIMIZE_HYPERPARAMETER_SEARCH,
+        outer_random_splits=RANDOM_CV_N_SPLITS,
+        random_state=random_state,
+        search_iterations=CV_SEARCH_ITERATIONS,
+        search_scoring=CV_SEARCH_SCORING,
+        fixed_hyperparameters=DEFAULT_CV_HYPERPARAMETERS,
+    )
+    return EnsembleCrossValidator(
+        config=cv_config, param_dist=PARAM_DIST, default_threshold=DEFAULT_ENSEMBLE_THRESHOLD,
+        build_preprocessor=build_preprocessor, build_search_model=_build_search_model,
+        fit_ensemble=_fit_ensemble, predict_probabilities=predict_ensemble_probabilities,
+        select_model_names=select_ensemble_model_names,
+        predict_model_probabilities=predict_route_model_probabilities,
+        fit_ensemble_handles_preprocessing=True,
+        search_age_feature_index=feature_names.index('Age'),
+        run_final_search=False,
+    )
+
+
+def _get_modality_comparison_inputs(data_folder, verbose, csv_path):
+    features, labels, metadata_rows = _collect_training_features(data_folder, verbose, csv_path)
+    feature_names = list(get_feature_names())
+    feature_indices = get_feature_group_indices(include_demographics=True)
+    modality_presence_indices = get_feature_group_indices(include_demographics=False)
+    categorical_indices = [
+        index for index, name in enumerate(feature_names)
+        if name.lower() in ('sex', 'gender')
+    ]
+    site_groups = np.asarray([
+        normalize_site_group(metadata_row['site_id'])
+        for metadata_row in metadata_rows
+    ])
+    return (
+        features,
+        labels,
+        feature_names,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices,
+        site_groups,
+    )
+
+
+def run_modality_comparison(data_folder, verbose, csv_path):
+    features, labels, feature_names, feature_indices, modality_presence_indices, categorical_indices, _ = (
+        _get_modality_comparison_inputs(data_folder, verbose, csv_path)
+    )
+    cv_runner = _build_modality_comparison_runner(feature_names, CV_RANDOM_STATE)
+    with redirect_stdout(io.StringIO()):
+        results = _run_modality_comparisons(
+            features, labels, feature_indices, modality_presence_indices,
+            categorical_indices, cv_runner,
+        )
+    print(_format_modality_comparison(results))
+    return results
+
+
+def _run_modality_comparisons_across_seeds(
+    features,
+    labels,
+    feature_names,
+    feature_indices,
+    modality_presence_indices,
+    categorical_indices,
+    seeds,
+    runner_factory=_build_modality_comparison_runner,
+):
+    results_by_seed = {}
+    for seed in seeds:
+        cv_runner = runner_factory(feature_names, int(seed))
+        results_by_seed[int(seed)] = _run_modality_comparisons(
+            features,
+            labels,
+            feature_indices,
+            modality_presence_indices,
+            categorical_indices,
+            cv_runner,
+        )
+    return results_by_seed
+
+
+def _format_modality_comparison_across_seeds(results_by_seed):
+    def metric(value):
+        return 'nan' if value is None or not np.isfinite(value) else f'{value:.3f}'
+
+    rows = []
+    for seed, results in results_by_seed.items():
+        scores = {
+            name: result.metrics['oof_calibrated_metrics']['age_conditioned_auroc']
+            for name, (_, result) in results.items()
+        }
+        rows.append((
+            seed,
+            scores['EEG'],
+            scores['ECG + EEG'],
+            scores['ALL'],
+            scores['ECG + EEG'] - scores['EEG'],
+            scores['ALL'] - scores['ECG + EEG'],
+        ))
+
+    lines = [
+        'Modality ablation across seeds',
+        '',
+        f"{'Seed':<7}{'EEG':<8}{'ECG+EEG':<10}{'ALL':<7}{'Delta ECG+EEG-EEG':<20}Delta ALL-ECG+EEG",
+    ]
+    for seed, eeg, ecg_eeg, all_modalities, delta_ecg_eeg, delta_all_ecg_eeg in rows:
+        lines.append(
+            f'{seed:<7}{metric(eeg):<8}{metric(ecg_eeg):<10}{metric(all_modalities):<7}'
+            f'{metric(delta_ecg_eeg):<20}{metric(delta_all_ecg_eeg)}'
+        )
+
+    values = np.asarray([row[1:] for row in rows], dtype=float)
+    means = np.nanmean(values, axis=0)
+    standard_deviations = np.nanstd(values, axis=0)
+    lines.extend([
+        '',
+        'Mean:',
+        f'EEG: {metric(means[0])} +/- {metric(standard_deviations[0])}',
+        f'ECG+EEG: {metric(means[1])} +/- {metric(standard_deviations[1])}',
+        f'ALL: {metric(means[2])} +/- {metric(standard_deviations[2])}',
+        '',
+        'Mean differences:',
+        f'ECG+EEG - EEG: {metric(means[3])} +/- {metric(standard_deviations[3])}',
+        f'ALL - ECG+EEG: {metric(means[4])} +/- {metric(standard_deviations[4])}',
+    ])
+    return '\n'.join(lines)
+
+
+def _format_modality_comparison_by_hospital(results):
+    def metric(value):
+        return 'nan' if value is None or not np.isfinite(value) else f'{value:.3f}'
+
+    scores_by_hospital = {}
+    for modality_name, (_, result) in results.items():
+        for fold_metrics in result.metrics['fold_metrics']:
+            hospital = fold_metrics['held_out_site']
+            scores_by_hospital.setdefault(hospital, {})[modality_name] = (
+                fold_metrics['age_conditioned_auroc']
+            )
+
+    lines = [
+        'Held-out hospital Age-AUROC',
+        '',
+        f"{'Held-out':<10}{'EEG':<8}{'ECG+EEG':<10}{'ALL':<8}Delta ECG+EEG-EEG",
+    ]
+    for hospital in sorted(scores_by_hospital):
+        scores = scores_by_hospital[hospital]
+        eeg = scores.get('EEG', np.nan)
+        ecg_eeg = scores.get('ECG + EEG', np.nan)
+        all_modalities = scores.get('ALL', np.nan)
+        lines.append(
+            f'{hospital:<10}{metric(eeg):<8}{metric(ecg_eeg):<10}{metric(all_modalities):<8}'
+            f'{metric(ecg_eeg - eeg)}'
+        )
+    return '\n'.join(lines)
+
+
+def run_modality_comparison_across_seeds(data_folder, verbose, csv_path, seeds):
+    inputs = _get_modality_comparison_inputs(data_folder, verbose, csv_path)
+    with redirect_stdout(io.StringIO()):
+        results_by_seed = _run_modality_comparisons_across_seeds(*inputs[:-1], seeds)
+    print(_format_modality_comparison_across_seeds(results_by_seed))
+    return results_by_seed
+
+
+def run_modality_comparison_leave_one_hospital_out(data_folder, verbose, csv_path):
+    (
+        features,
+        labels,
+        feature_names,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices,
+        site_groups,
+    ) = _get_modality_comparison_inputs(data_folder, verbose, csv_path)
+    cv_runner = _build_modality_comparison_runner(
+        feature_names,
+        use_site_grouped_cv=True,
+    )
+    with redirect_stdout(io.StringIO()):
+        results = _run_modality_comparisons(
+            features,
+            labels,
+            feature_indices,
+            modality_presence_indices,
+            categorical_indices,
+            cv_runner,
+            site_groups=site_groups,
+        )
+    print(_format_modality_comparison(results))
+    print()
+    print(_format_modality_comparison_by_hospital(results))
+    return results
+
+
+def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None):
+    features, labels, metadata_rows = _collect_training_features(data_folder, verbose, csv_path)
 
     feature_names = list(get_feature_names())
     feature_indices = get_feature_group_indices(include_demographics=True)

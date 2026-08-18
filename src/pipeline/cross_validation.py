@@ -57,6 +57,7 @@ class EnsembleCrossValidator:
         search_age_feature_index: Optional[int] = None,
         search_age_feature_scale: float = 1.0,
         search_age_feature_offset: float = 0.0,
+        run_final_search: bool = True,
     ):
         self.config = config
         self.param_dist = param_dist
@@ -71,6 +72,7 @@ class EnsembleCrossValidator:
         self.search_age_feature_index = search_age_feature_index
         self.search_age_feature_scale = float(search_age_feature_scale)
         self.search_age_feature_offset = float(search_age_feature_offset)
+        self.run_final_search = bool(run_final_search)
 
     def run(
         self,
@@ -183,6 +185,8 @@ class EnsembleCrossValidator:
                 'site_groups': unique_sites.tolist(),
             },
         )
+        if not self.run_final_search:
+            return result
         return self._complete_final_model_selection(
             result,
             features,
@@ -254,6 +258,8 @@ class EnsembleCrossValidator:
                 'n_splits': int(n_splits),
             },
         )
+        if not self.run_final_search:
+            return result
         return self._complete_final_model_selection(
             result,
             features,
