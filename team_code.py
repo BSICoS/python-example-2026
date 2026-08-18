@@ -16,10 +16,12 @@ import atexit
 import builtins
 import re
 import sys
+import warnings
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from biosigpy.hrv.fdmetrics import FdMetricsWarning
 
 from helper_code import *
 from src.pipeline.config import DEFAULT_CSV_PATH
@@ -45,6 +47,16 @@ def _close_run_model_pbar():
     if RUN_MODEL_PBAR is not None:
         RUN_MODEL_PBAR.close()
         RUN_MODEL_PBAR = None
+    if (
+        RUN_MODEL_EXPORT_STATE is not None
+        and not RUN_MODEL_EXPORT_STATE['vlf_summary_written']
+    ):
+        if RUN_MODEL_EXPORT_STATE['verbose']:
+            tqdm.write(
+                "  ! excessive_vlf_power affected "
+                f"{RUN_MODEL_EXPORT_STATE['excessive_vlf_patient_count']} patients."
+            )
+        RUN_MODEL_EXPORT_STATE['vlf_summary_written'] = True
 
 
 def _flush_run_feature_exports():
@@ -52,6 +64,8 @@ def _flush_run_feature_exports():
 
     if RUN_MODEL_EXPORT_STATE is None or not RUN_MODEL_EXPORT_STATE['metadata_rows']:
         return
+
+    _close_run_model_pbar()
 
     feature_exports = export_feature_views(
         RUN_MODEL_EXPORT_STATE['export_root'],
@@ -172,8 +186,8 @@ def run_model(model, record, data_folder, verbose):
             total=RUN_MODEL_PBAR_TOTAL,
             desc="Running Model",
             unit="record",
-            leave=True,
-            file=sys.stdout,
+            leave=False,
+            file=sys.stderr,
             delay=0.5,
             disable=not verbose
         )
@@ -187,6 +201,8 @@ def run_model(model, record, data_folder, verbose):
             'feature_names': list(model.get('feature_names', [])),
             'preprocessor': model.get('preprocessor'),
             'verbose': verbose,
+            'excessive_vlf_patient_count': 0,
+            'vlf_summary_written': False,
         }
 
     if verbose and RUN_MODEL_PBAR is not None:
@@ -195,13 +211,21 @@ def run_model(model, record, data_folder, verbose):
     # Load the patient data.
     patient_data_file = os.path.join(data_folder, DEMOGRAPHICS_FILE)
     patient_data = load_demographics(patient_data_file, patient_id, session_id)
-    features = get_or_create_record_feature_vector(
-        record,
-        data_folder,
-        patient_data,
-        csv_path=DEFAULT_CSV_PATH,
-        require_physiological_data=False,
-    )
+    with warnings.catch_warnings(record=True) as captured_warnings:
+        warnings.simplefilter('always', FdMetricsWarning)
+        features = get_or_create_record_feature_vector(
+            record,
+            data_folder,
+            patient_data,
+            csv_path=DEFAULT_CSV_PATH,
+            require_physiological_data=False,
+        )
+    if any(
+        issubclass(warning.category, FdMetricsWarning)
+        and getattr(warning.message, 'warning_id', None) == 'excessive_vlf_power'
+        for warning in captured_warnings
+    ):
+        RUN_MODEL_EXPORT_STATE['excessive_vlf_patient_count'] += 1
     features = np.asarray(features, dtype=np.float32).reshape(1, -1)
 
     RUN_MODEL_EXPORT_STATE['metadata_rows'].append({
@@ -219,8 +243,7 @@ def run_model(model, record, data_folder, verbose):
     if verbose and RUN_MODEL_PBAR is not None:
         RUN_MODEL_PBAR.update(1)
         if RUN_MODEL_PBAR_TOTAL is not None and RUN_MODEL_PBAR.n >= RUN_MODEL_PBAR_TOTAL:
-            RUN_MODEL_PBAR.close()
-            RUN_MODEL_PBAR = None
+            _close_run_model_pbar()
 
     if RUN_MODEL_PBAR_TOTAL is not None and RUN_MODEL_EXPORT_STATE is not None:
         if len(RUN_MODEL_EXPORT_STATE['metadata_rows']) >= RUN_MODEL_PBAR_TOTAL:
