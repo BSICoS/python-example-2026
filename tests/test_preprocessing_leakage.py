@@ -31,6 +31,12 @@ def _predict_from_fold_preprocessor(model_bundle, raw_features):
     return 1.0 / (1.0 + np.exp(-processed[:, 0]))
 
 
+class _FeatureProbabilityModel:
+    def predict_proba(self, features):
+        positive = np.asarray(features, dtype=np.float32)[:, 1]
+        return np.column_stack([1.0 - positive, positive])
+
+
 class PreprocessingLeakageTests(unittest.TestCase):
     def setUp(self):
         _RecordingPreprocessor.fitted_sample_counts = []
@@ -136,6 +142,53 @@ class PreprocessingLeakageTests(unittest.TestCase):
             )
 
         self.assertEqual(fitted_params, [{'max_depth': 1}, {'max_depth': 2}])
+
+    def test_cross_validation_saves_metrics_for_each_selected_model_route(self):
+        features = np.array([
+            [20.0, 0.1], [21.0, 0.9], [22.0, 0.2], [23.0, 0.8],
+            [24.0, 0.3], [25.0, 0.7], [26.0, 0.4], [27.0, 0.6],
+        ], dtype=np.float32)
+        labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
+        feature_indices = {
+            'all': np.array([0, 1], dtype=np.int32),
+            'demographics': np.array([0], dtype=np.int32),
+            'ecg': np.array([1], dtype=np.int32),
+            'eeg': np.array([1], dtype=np.int32),
+        }
+
+        runner = EnsembleCrossValidator(
+            config=CrossValidationConfig(
+                search_scoring='roc_auc',
+                use_site_grouped_cv=False,
+                optimize_hyperparameter_search=False,
+                outer_random_splits=2,
+            ),
+            param_dist={},
+            default_threshold=0.5,
+            build_preprocessor=lambda *args: None,
+            build_search_model=lambda labels: object(),
+            fit_ensemble=lambda *args, **kwargs: {
+                'ecg': _FeatureProbabilityModel(),
+                'eeg': _FeatureProbabilityModel(),
+            },
+            predict_probabilities=lambda bundle, values: values[:, 1],
+            select_model_names=lambda bundle, values: np.where(values[:, 0] < 24, 'ecg', 'eeg'),
+            search_age_feature_index=0,
+        )
+
+        with redirect_stdout(io.StringIO()):
+            result = runner.run(
+                features,
+                labels,
+                feature_indices,
+                modality_presence_indices=feature_indices,
+            )
+
+        route_metrics = result.metrics['model_route_metrics']
+        self.assertEqual(route_metrics['ecg']['n_records'], 4)
+        self.assertEqual(route_metrics['eeg']['n_records'], 4)
+        self.assertEqual(route_metrics['ecg']['n_positive'], 2)
+        self.assertEqual(route_metrics['eeg']['n_negative'], 2)
 
 
 if __name__ == '__main__':

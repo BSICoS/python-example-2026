@@ -299,6 +299,40 @@ def _has_modality_signal(feature_vector, modality_presence_indices):
     modality_values = feature_vector[modality_presence_indices]
     return bool(np.any(np.isfinite(modality_values)))
 
+
+def _select_ensemble_model_name(raw_feature_vector, models, modality_presence_indices):
+    active_modalities = {
+        modality
+        for modality in ENSEMBLE_MODALITIES
+        if modality in modality_presence_indices
+        and _has_modality_signal(raw_feature_vector, modality_presence_indices[modality])
+    }
+
+    model_by_modalities = {
+        frozenset(('ecg', 'eeg', 'resp')): 'all',
+        frozenset(('ecg', 'eeg')): 'ecg_eeg',
+        frozenset(('ecg', 'resp')): 'ecg_resp',
+        frozenset(('eeg', 'resp')): 'eeg_resp',
+        frozenset(('ecg',)): 'ecg',
+        frozenset(('eeg',)): 'eeg',
+        frozenset(('resp',)): 'resp',
+    }
+    target_model = model_by_modalities.get(frozenset(active_modalities), 'all')
+    return target_model if target_model in models else 'all'
+
+
+def select_ensemble_model_names(model_bundle, feature_matrix):
+    raw_feature_matrix, _ = prepare_feature_matrix(feature_matrix)
+    modality_presence_indices = {
+        name: np.asarray(indices, dtype=np.int32)
+        for name, indices in model_bundle['modality_presence_indices'].items()
+    }
+    models = model_bundle['models']
+    return np.asarray([
+        _select_ensemble_model_name(raw_feature_vector, models, modality_presence_indices)
+        for raw_feature_vector in raw_feature_matrix
+    ], dtype=object)
+
 def predict_ensemble_probabilities(model_bundle, feature_matrix):
     raw_feature_matrix, processed_feature_matrix = prepare_feature_matrix(
         feature_matrix,
@@ -327,31 +361,11 @@ def predict_ensemble_probabilities(model_bundle, feature_matrix):
     probabilities = np.zeros(raw_feature_matrix.shape[0], dtype=np.float32)
     for row_index, raw_feature_vector in enumerate(raw_feature_matrix):
         processed_feature_vector = processed_feature_matrix[row_index]
-        
-        # Check presence of individual medical signals
-        active_modalities = set()
-        for modality in ENSEMBLE_MODALITIES:
-            if modality in modality_presence_indices and _has_modality_signal(raw_feature_vector, modality_presence_indices[modality]):
-                active_modalities.add(modality)
-
-        # Map available signal combinations to the corresponding combined model name
-        if active_modalities == {'ecg', 'eeg', 'resp'} and 'all' in models:
-            target_model = 'all'
-        elif active_modalities == {'ecg', 'eeg'} and 'ecg_eeg' in models:
-            target_model = 'ecg_eeg'
-        elif active_modalities == {'ecg', 'resp'} and 'ecg_resp' in models:
-            target_model = 'ecg_resp'
-        elif active_modalities == {'eeg', 'resp'} and 'eeg_resp' in models:
-            target_model = 'eeg_resp'
-        elif active_modalities == {'ecg'} and 'ecg' in models:
-            target_model = 'ecg'
-        elif active_modalities == {'eeg'} and 'eeg' in models:
-            target_model = 'eeg'
-        elif active_modalities == {'resp'} and 'resp' in models:
-            target_model = 'resp'
-        else:
-            # Default fallback to 'all' model if no specific signal active or mismatch
-            target_model = 'all'
+        target_model = _select_ensemble_model_name(
+            raw_feature_vector,
+            models,
+            modality_presence_indices,
+        )
 
         target_indices = combined_indices[target_model]
         model_features = processed_feature_vector[target_indices].reshape(1, -1)
@@ -519,6 +533,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         build_search_model=_build_search_model,
         fit_ensemble=_fit_ensemble,
         predict_probabilities=predict_ensemble_probabilities,
+        select_model_names=select_ensemble_model_names,
         search_age_feature_index=raw_age_feature_index,
         search_age_feature_scale=1.0,
         search_age_feature_offset=0.0,
