@@ -27,6 +27,7 @@ ECG_SEGMENT_FEATURE_NAMES = [
 ECG_SEGMENT_FEATURE_LENGTH = len(ECG_SEGMENT_FEATURE_NAMES)
 ECG_FEATURE_NAMES = ECG_SEGMENT_FEATURE_NAMES
 ECG_FEATURE_LENGTH = ECG_SEGMENT_FEATURE_LENGTH
+_RESPIRATION_NOT_PROVIDED = object()
 
 def _find_ecg_channel(physiological_data):
     for label in physiological_data.keys():
@@ -35,8 +36,13 @@ def _find_ecg_channel(physiological_data):
             return label
     return None
 
-
-def processECG(physiological_data, physiological_fs, csv_path):
+def processECG(
+    physiological_data,
+    physiological_fs,
+    csv_path,
+    *,
+    selected_respiration=_RESPIRATION_NOT_PROVIDED,
+):
     results = np.full(ECG_SEGMENT_FEATURE_LENGTH, np.nan, dtype=np.float32)
 
     ecg_label = _find_ecg_channel(physiological_data)
@@ -53,11 +59,12 @@ def processECG(physiological_data, physiological_fs, csv_path):
     if ecg_signal.size == 0:
         return results
 
-    selected_respiration = select_best_respiration_signal(
-        physiological_data,
-        physiological_fs,
-        csv_path,
-    )
+    if selected_respiration is _RESPIRATION_NOT_PROVIDED:
+        selected_respiration = select_best_respiration_signal(
+            physiological_data,
+            physiological_fs,
+            csv_path,
+        )
 
     try:
         values = compute_ecg_features(

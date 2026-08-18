@@ -20,7 +20,6 @@ RESP_FEATURE_NAMES = RESP_SEGMENT_FEATURE_NAMES
 RESP_FEATURE_LENGTH = RESP_SEGMENT_FEATURE_LENGTH
 RESP_ALIAS_GROUPS_CACHE = {}
 
-
 @dataclass(frozen=True)
 class SelectedRespiration:
     """Best direct respiration channel according to the feature pipeline."""
@@ -34,6 +33,10 @@ class SelectedRespiration:
     quality: float
     peakedness: float
 
+@dataclass(frozen=True)
+class RespirationSegmentResult:
+    features: np.ndarray
+    selected: SelectedRespiration | None
 
 def _build_resp_alias_groups(channels):
     resp_rows = channels[channels['Category'].eq('resp')].reset_index(drop=True)
@@ -47,7 +50,6 @@ def _build_resp_alias_groups(channels):
         'SpO2': split_channel_aliases(resp_rows.iloc[6]['Channel_Names']),
     }
 
-
 def _get_resp_alias_groups(csv_path):
     channels, normalized_csv_path = get_cached_channel_table(csv_path)
     alias_groups = RESP_ALIAS_GROUPS_CACHE.get(normalized_csv_path)
@@ -56,7 +58,6 @@ def _get_resp_alias_groups(csv_path):
         RESP_ALIAS_GROUPS_CACHE[normalized_csv_path] = alias_groups
     return alias_groups
 
-
 def _find_resp_group(label, alias_groups):
     normalized = normalize_channel_label(label)
     for group_name, aliases in alias_groups.items():
@@ -64,13 +65,11 @@ def _find_resp_group(label, alias_groups):
             return group_name
     return None
 
-
 def get_respiration_feature_group(label, csv_path):
     """Return the production respiratory group, excluding SpO2 and extras."""
 
     group_name = _find_resp_group(label, _get_resp_alias_groups(csv_path))
     return group_name if group_name in RESP_CHANNEL_GROUPS else None
-
 
 def _compute_resp_quality(used, hat_br):
     used_array = np.asarray(used, dtype=float)
@@ -83,14 +82,12 @@ def _compute_resp_quality(used, hat_br):
         return 0.0
     return float(np.mean(np.isfinite(hat_br)))
 
-
 def _compute_peakedness_metric(hat_br):
     finite_values = np.asarray(hat_br, dtype=float)
     finite_values = finite_values[np.isfinite(finite_values)]
     if finite_values.size == 0:
         return np.nan
     return float(np.mean(finite_values))
-
 
 def _evaluate_direct_respiration(label, signal, sampling_frequency, group_name):
     original = np.asarray(signal, dtype=float)
@@ -130,7 +127,6 @@ def _evaluate_direct_respiration(label, signal, sampling_frequency, group_name):
         peakedness=peakedness,
     )
 
-
 def select_best_respiration_signal(
     physiological_data,
     physiological_fs,
@@ -169,7 +165,6 @@ def select_best_respiration_signal(
 
     return best
 
-
 def _compute_spo2_segment_metrics(data, fs):
     if data.size == 0:
         return {}
@@ -198,11 +193,15 @@ def _compute_spo2_segment_metrics(data, fs):
         'ODI_deepness': float(odi_deepness),
     }
 
-
-def processResp(physiological_data, physiological_fs, csv_path):
+def process_respiration_segment(
+    physiological_data,
+    physiological_fs,
+    csv_path,
+):
     alias_groups = _get_resp_alias_groups(csv_path)
     results = {feature_name: np.nan for feature_name in RESP_SEGMENT_FEATURE_NAMES}
     best_quality = {group_name: -np.inf for group_name in RESP_CHANNEL_GROUPS}
+    selected = None
 
     for label, signal in physiological_data.items():
         if label not in physiological_fs:
@@ -235,10 +234,25 @@ def processResp(physiological_data, physiological_fs, csv_path):
         )
         if candidate is None:
             continue
+        if selected is None or candidate.quality > selected.quality:
+            selected = candidate
         if candidate.quality <= best_quality[group_name]:
             continue
 
         best_quality[group_name] = candidate.quality
         results[f'{group_name}_Peakedness'] = candidate.peakedness
 
-    return np.array([results[name] for name in RESP_SEGMENT_FEATURE_NAMES], dtype=np.float32)
+    return RespirationSegmentResult(
+        features=np.array(
+            [results[name] for name in RESP_SEGMENT_FEATURE_NAMES],
+            dtype=np.float32,
+        ),
+        selected=selected,
+    )
+
+def processResp(physiological_data, physiological_fs, csv_path):
+    return process_respiration_segment(
+        physiological_data,
+        physiological_fs,
+        csv_path,
+    ).features

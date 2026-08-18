@@ -9,7 +9,12 @@ from src.common.channel_utils import normalize_channel_label
 from helper_code import HEADERS, PHYSIOLOGICAL_DATA_SUBFOLDER, load_age, load_sex, load_signal_data
 from src.ecg_processing import ECG_FEATURE_LENGTH, ECG_FEATURE_NAMES, ECG_KEYWORDS, processECG
 from src.eeg_processing import EEG_CHANNEL_SPECS, EEG_FEATURE_LENGTH, EEG_FEATURE_NAMES, processEEG, _get_eeg_aliases
-from src.resp_processing import RESP_FEATURE_LENGTH, RESP_FEATURE_NAMES, processResp, _get_resp_alias_groups
+from src.resp_processing import (
+    RESP_FEATURE_LENGTH,
+    RESP_FEATURE_NAMES,
+    _get_resp_alias_groups,
+    process_respiration_segment,
+)
 
 from .config import (
     DEFAULT_CSV_PATH,
@@ -21,13 +26,11 @@ from .config import (
     TOTAL_PHYSIOLOGICAL_FEATURE_LENGTH,
 )
 
-
 REQUIRED_SIGNAL_ALIASES_CACHE = {}
 DEMOGRAPHIC_FEATURE_NAMES = (
     'Age',
     'Sex',
 )
-
 
 def _build_aggregated_feature_names(segment_feature_names):
     names = []
@@ -63,16 +66,13 @@ SEGMENT_AGGREGATION_FUNCTIONS = {
     'Std': lambda values: float(np.std(values)),
 }
 
-
 def _get_feature_cache_root(data_folder):
     return os.path.join(SCRIPT_DIR, FEATURE_CACHE_FOLDER_NAME)
-
 
 def _coerce_feature_vector(features):
     vector = np.asarray(features, dtype=np.float32).reshape(-1)
     vector[~np.isfinite(vector)] = np.nan
     return vector
-
 
 def _extract_optional_features(extractor, expected_length, *args, **kwargs):
     vector = _coerce_feature_vector(extractor(*args, **kwargs))
@@ -81,7 +81,6 @@ def _extract_optional_features(extractor, expected_length, *args, **kwargs):
             f"{extractor.__name__} returned {vector.size} features; expected {expected_length}."
         )
     return vector
-
 
 def _get_physiological_data_file(data_folder, site_id, patient_id, session_id):
     return os.path.join(
@@ -111,7 +110,6 @@ def _get_required_signal_aliases(csv_path):
     REQUIRED_SIGNAL_ALIASES_CACHE[normalized_csv_path] = required_aliases
     return required_aliases
 
-
 def _load_required_signal_data(edf_path, csv_path):
     required_aliases = _get_required_signal_aliases(csv_path)
     channel_dict = {}
@@ -139,19 +137,15 @@ def _load_required_signal_data(edf_path, csv_path):
 
     return load_signal_data(edf_path)
 
-
 def _get_feature_cache_file(data_folder, site_id, patient_id, session_id):
     cache_dir = os.path.join(_get_feature_cache_root(data_folder), site_id)
     return os.path.join(cache_dir, f"{patient_id}_ses-{session_id}.sav")
 
-
 def get_feature_export_dir(data_folder):
     return os.path.join(_get_feature_cache_root(data_folder), 'exports')
 
-
 def _get_feature_cache_csv_file(cache_file):
     return f"{os.path.splitext(cache_file)[0]}.csv"
-
 
 def _load_cached_feature_vector(cache_file):
     if not os.path.exists(cache_file):
@@ -172,7 +166,6 @@ def _load_cached_feature_vector(cache_file):
     if vector.size != len(FEATURE_NAMES):
         return None
     return vector
-
 
 def _save_cached_feature_vector(cache_file, feature_vector):
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
@@ -226,10 +219,8 @@ def extract_demographic_features(data):
 
     return np.concatenate([age, sex_vec]).astype(np.float32)
 
-
 def get_feature_names():
     return FEATURE_NAMES
-
 
 def get_feature_group_indices(include_demographics=False):
     groups = {}
@@ -251,7 +242,6 @@ def get_feature_group_indices(include_demographics=False):
 
     groups['all'] = np.arange(len(FEATURE_NAMES), dtype=np.int32)
     return groups
-
 
 def _iter_signal_segments(physiological_data, physiological_fs):
     if not physiological_data:
@@ -302,7 +292,6 @@ def _iter_signal_segments(physiological_data, physiological_fs):
 
     return segments
 
-
 def _aggregate_segment_feature_vectors(feature_vectors, segment_feature_names):
     if not feature_vectors:
         # Calculate total length dynamically based on the features being processed
@@ -335,7 +324,6 @@ def _aggregate_segment_feature_vectors(feature_vectors, segment_feature_names):
 
     return np.asarray(aggregated_values, dtype=np.float32)
 
-
 def _extract_segmented_features(extractor, segment_feature_names, physiological_data, physiological_fs, csv_path):
     expected_length = len(segment_feature_names)
     segments = _iter_signal_segments(physiological_data, physiological_fs)
@@ -363,11 +351,60 @@ def _extract_segmented_features(extractor, segment_feature_names, physiological_
 
     return _aggregate_segment_feature_vectors(segment_feature_vectors, segment_feature_names)
 
+def _extract_respiration_and_ecg_features(
+    physiological_data,
+    physiological_fs,
+    csv_path,
+):
+    segments = _iter_signal_segments(physiological_data, physiological_fs)
+    respiration_vectors = []
+    ecg_vectors = []
+
+    for segment_data, segment_fs in segments:
+        respiration_result = None
+        try:
+            respiration_result = process_respiration_segment(
+                segment_data,
+                segment_fs,
+                csv_path,
+            )
+            if not np.all(np.isnan(respiration_result.features)):
+                respiration_vectors.append(respiration_result.features)
+        except Exception:
+            pass
+
+        ecg_kwargs = (
+            {"selected_respiration": respiration_result.selected}
+            if respiration_result is not None
+            else {}
+        )
+        try:
+            ecg_vector = _extract_optional_features(
+                processECG,
+                len(ECG_FEATURE_NAMES),
+                segment_data,
+                segment_fs,
+                csv_path=csv_path,
+                **ecg_kwargs,
+            )
+        except Exception:
+            continue
+        if not np.all(np.isnan(ecg_vector)):
+            ecg_vectors.append(ecg_vector)
+
+    return (
+        _aggregate_segment_feature_vectors(
+            respiration_vectors,
+            RESP_FEATURE_NAMES,
+        ),
+        _aggregate_segment_feature_vectors(
+            ecg_vectors,
+            ECG_FEATURE_NAMES,
+        ),
+    )
 
 def extract_extended_physiological_features(physiological_data, physiological_fs, csv_path=DEFAULT_CSV_PATH):
-    resp_features = _extract_segmented_features(
-        processResp,
-        RESP_FEATURE_NAMES,
+    resp_features, ecg_features = _extract_respiration_and_ecg_features(
         physiological_data,
         physiological_fs,
         csv_path,
@@ -379,16 +416,8 @@ def extract_extended_physiological_features(physiological_data, physiological_fs
         physiological_fs,
         csv_path,
     )
-    ecg_features = _extract_segmented_features(
-        processECG,
-        ECG_FEATURE_NAMES,
-        physiological_data,
-        physiological_fs,
-        csv_path,
-    )
 
     return np.hstack([resp_features, eeg_features, ecg_features]).astype(np.float32)
-
 
 def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_id, session_id, csv_path, require_physiological_data):
     demographic_features = extract_demographic_features(patient_data)

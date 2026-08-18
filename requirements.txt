@@ -7,7 +7,7 @@ scipy==1.13.1
 tqdm==4.67.1
 xgboost==3.2.0
 matplotlib==3.9.0
-biosigpy==0.3.2
+biosigpy==0.3.3
 
 # === DEPENDENCIAS PRINCIPALES PARA PROPHECG ===
 # Instalamos PyTorch 
