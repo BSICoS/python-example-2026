@@ -84,13 +84,15 @@ class CrossValidationScoringTests(unittest.TestCase):
 
         with patch('src.pipeline.cross_validation.RandomizedSearchCV') as search_class:
             search_class.return_value.best_params_ = {'model__max_depth': 3}
-            params = runner._search_hyperparams(features, labels)
+            search_class.return_value.best_score_ = 0.75
+            params, score = runner._search_hyperparams(features, labels)
 
         estimator = search_class.call_args.kwargs['estimator']
         self.assertIsInstance(estimator, Pipeline)
         self.assertEqual(list(estimator.named_steps), ['preprocessor', 'model'])
         self.assertEqual(search_class.call_args.kwargs['param_distributions'], {'model__max_depth': [3]})
         self.assertEqual(params, {'max_depth': 3})
+        self.assertEqual(score, 0.75)
         scorer = search_class.call_args.kwargs['scoring']
         self.assertIsInstance(scorer, AgeConditionedAUROCScorer)
         self.assertEqual(scorer.age_feature_scale, 10.0)
@@ -102,6 +104,77 @@ class CrossValidationScoringTests(unittest.TestCase):
     def test_unknown_selector_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'Unsupported CV search scoring selector'):
             resolve_search_scoring('not-a-metric')
+
+    def test_consensus_selects_most_frequent_complete_configuration(self):
+        runner = self._build_consensus_runner()
+        configuration_a = {'n_estimators': 100, 'max_depth': 3, 'learning_rate': 0.03}
+        selected = [
+            {'fold': 1, 'params': configuration_a, 'score': 0.71},
+            {'fold': 2, 'params': configuration_a, 'score': 0.73},
+            {'fold': 3, 'params': {'n_estimators': 800, 'max_depth': 5, 'learning_rate': 0.30}, 'score': 0.90},
+            {'fold': 4, 'params': {'n_estimators': 1000, 'max_depth': 10, 'learning_rate': 0.01}, 'score': 0.80},
+            {'fold': 5, 'params': {'n_estimators': 1000, 'max_depth': 3, 'learning_rate': 0.01}, 'score': 0.85},
+        ]
+
+        consensus, frequency, folds, mean_score = runner._consensus_params(selected)
+
+        self.assertEqual(consensus, configuration_a)
+        self.assertEqual(frequency, 2)
+        self.assertEqual(folds, [1, 2])
+        self.assertAlmostEqual(mean_score, 0.72)
+        self.assertIn(consensus, [item['params'] for item in selected])
+
+    def test_consensus_uses_best_score_when_all_configurations_differ(self):
+        runner = self._build_consensus_runner()
+        selected = [
+            {'fold': 1, 'params': {'max_depth': 3}, 'score': 0.70},
+            {'fold': 2, 'params': {'max_depth': 5}, 'score': 0.92},
+            {'fold': 3, 'params': {'max_depth': 7}, 'score': 0.80},
+        ]
+
+        consensus, _, _, _ = runner._consensus_params(selected)
+
+        self.assertEqual(consensus, {'max_depth': 5})
+        self.assertIn(consensus, [item['params'] for item in selected])
+
+    def test_consensus_uses_mean_score_to_break_frequency_tie(self):
+        runner = self._build_consensus_runner()
+        selected = [
+            {'fold': 1, 'params': {'max_depth': 3}, 'score': 0.70},
+            {'fold': 2, 'params': {'max_depth': 5}, 'score': 0.85},
+            {'fold': 3, 'params': {'max_depth': 3}, 'score': 0.80},
+            {'fold': 4, 'params': {'max_depth': 5}, 'score': 0.95},
+        ]
+
+        consensus, frequency, folds, mean_score = runner._consensus_params(selected)
+
+        self.assertEqual(consensus, {'max_depth': 5})
+        self.assertEqual(frequency, 2)
+        self.assertEqual(folds, [2, 4])
+        self.assertAlmostEqual(mean_score, 0.90)
+
+    def test_consensus_uses_first_fold_to_break_score_tie_deterministically(self):
+        runner = self._build_consensus_runner()
+        selected = [
+            {'fold': 1, 'params': {'max_depth': 3}, 'score': 0.80},
+            {'fold': 2, 'params': {'max_depth': 5}, 'score': 0.80},
+        ]
+
+        consensus, _, folds, _ = runner._consensus_params(selected)
+
+        self.assertEqual(consensus, {'max_depth': 3})
+        self.assertEqual(folds, [1])
+
+    def _build_consensus_runner(self):
+        return EnsembleCrossValidator(
+            config=CrossValidationConfig(search_scoring='roc_auc'),
+            param_dist={},
+            default_threshold=0.5,
+            build_preprocessor=lambda *args: None,
+            build_search_model=lambda labels: object(),
+            fit_ensemble=lambda *args, **kwargs: {},
+            predict_probabilities=lambda *args, **kwargs: None,
+        )
 
 
 if __name__ == '__main__':

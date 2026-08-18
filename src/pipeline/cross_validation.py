@@ -278,22 +278,27 @@ class EnsembleCrossValidator:
             search_site_groups = None if site_groups is None else site_groups[split.train_idx]
 
 
-            fold_best_params = self._search_hyperparams(
+            fold_best_params, fold_best_score = self._search_hyperparams(
                 X_train,
                 y_train,
                 site_groups=search_site_groups,
                 categorical_indices=categorical_indices,
             )
-            print(f"    Best params: {fold_best_params}")
+            print(f"    Best params: {fold_best_params} (inner-CV score: {fold_best_score:.3f})")
             selected_params_per_fold.append({
                 'fold': int(split.fold_index),
                 'label': split.label,
                 'params': fold_best_params,
+                'score': fold_best_score,
                 'source': 'search',
             })
 
-        consensus = self._consensus_params([item['params'] for item in selected_params_per_fold])
-        print(f"  Consensus hyperparameters: {consensus}")
+        consensus, frequency, selected_folds, mean_score = self._consensus_params(selected_params_per_fold)
+        print('  Final hyperparameter selection:')
+        print(f"    Configuration frequency: {frequency}/{len(selected_params_per_fold)} folds")
+        print(f"    Selected from folds: {selected_folds}")
+        print(f"    Mean inner-CV score: {mean_score:.3f}")
+        print(f"    Consensus hyperparameters: {consensus}")
         return consensus, selected_params_per_fold
     
     def _evaluate_with_fold_params(
@@ -548,7 +553,7 @@ class EnsembleCrossValidator:
     def _search_hyperparams(self, X_train, y_train, site_groups=None, categorical_indices=None):
         inner_cv, fit_kwargs = self._build_inner_cv(y_train, site_groups)
         if inner_cv is None:
-            return {}
+            return {}, float('nan')
 
         scoring = resolve_search_scoring(
             self.config.search_scoring,
@@ -580,10 +585,13 @@ class EnsembleCrossValidator:
             refit=False,
         )
         search.fit(X_train, y_train, **fit_kwargs)
-        return {
-            name.removeprefix('model__'): value
-            for name, value in search.best_params_.items()
-        }
+        return (
+            {
+                name.removeprefix('model__'): value
+                for name, value in search.best_params_.items()
+            },
+            float(search.best_score_),
+        )
 
     def _build_inner_cv(self, y_train, site_groups=None):
         fit_kwargs = {}
@@ -679,14 +687,56 @@ class EnsembleCrossValidator:
 
         return summary
 
-    def _consensus_params(self, params_per_fold):
-        consensus = {}
-        for key in self.param_dist.keys():
-            values = [params[key] for params in params_per_fold if key in params]
-            if not values:
-                continue
-            consensus[key] = max(set(values), key=values.count)
-        return consensus
+    def _consensus_params(self, selected_params_per_fold):
+        configurations = {}
+        for selected in selected_params_per_fold:
+            params = dict(selected['params'])
+            configuration_key = tuple(
+                sorted((key, self._freeze_param_value(value)) for key, value in params.items())
+            )
+            configurations.setdefault(configuration_key, []).append({
+                'fold': int(selected['fold']),
+                'params': params,
+                'score': float(selected.get('score', np.nan)),
+            })
+
+        def configuration_rank(occurrences):
+            scores = np.asarray([entry['score'] for entry in occurrences], dtype=float)
+            mean_score = float(np.mean(scores)) if np.all(np.isfinite(scores)) else -np.inf
+            first_fold = min(entry['fold'] for entry in occurrences)
+            return len(occurrences), mean_score, -first_fold
+
+        winning_occurrences = max(configurations.values(), key=configuration_rank)
+        winning_scores = np.asarray(
+            [entry['score'] for entry in winning_occurrences],
+            dtype=float,
+        )
+        mean_score = (
+            float(np.mean(winning_scores))
+            if np.all(np.isfinite(winning_scores))
+            else float('nan')
+        )
+        return (
+            dict(winning_occurrences[0]['params']),
+            len(winning_occurrences),
+            [entry['fold'] for entry in winning_occurrences],
+            mean_score,
+        )
+
+    def _freeze_param_value(self, value):
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return tuple(self._freeze_param_value(item) for item in value.tolist())
+        if isinstance(value, dict):
+            return tuple(
+                sorted((key, self._freeze_param_value(item)) for key, item in value.items())
+            )
+        if isinstance(value, (list, tuple)):
+            return tuple(self._freeze_param_value(item) for item in value)
+        if isinstance(value, set):
+            return tuple(sorted(self._freeze_param_value(item) for item in value))
+        return value
 
     def _format_metric_value(self, value):
         return 'nan' if value is None or not np.isfinite(value) else f'{value:.3f}'
