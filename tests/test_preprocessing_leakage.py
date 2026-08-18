@@ -116,8 +116,8 @@ class PreprocessingLeakageTests(unittest.TestCase):
         ]
         fitted_params = []
 
-        def fit_ensemble(features, labels, indices, consensus_params=None):
-            fitted_params.append(dict(consensus_params))
+        def fit_ensemble(features, labels, indices, final_params=None):
+            fitted_params.append(dict(final_params or {}))
             return {}
 
         runner = EnsembleCrossValidator(
@@ -208,9 +208,13 @@ class PreprocessingLeakageTests(unittest.TestCase):
             'all': np.arange(4, dtype=np.int32),
         }
         fitted_labels = []
+        fitted_params = []
 
-        def record_fit(features, route_labels, consensus_params=None):
+        final_params = {'max_depth': 6, 'n_estimators': 100}
+
+        def record_fit(features, route_labels, final_params=None):
             fitted_labels.append(np.asarray(route_labels, dtype=np.int32))
+            fitted_params.append(dict(final_params or {}))
             return _FeatureProbabilityModel()
 
         with patch('src.pipeline.training._fit_model', side_effect=record_fit):
@@ -222,6 +226,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
                     name: feature_indices[name]
                     for name in ('ecg', 'eeg', 'resp')
                 },
+                final_params=final_params,
             )
 
         self.assertEqual(models['ecg']['n_train'], 4)
@@ -229,6 +234,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
         self.assertEqual(models['ecg_eeg']['n_train'], 3)
         self.assertEqual(models['all']['n_train'], 2)
         self.assertEqual(len(fitted_labels), len(models))
+        self.assertEqual(fitted_params, [final_params] * len(models))
 
 
 if __name__ == '__main__':

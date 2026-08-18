@@ -1,4 +1,6 @@
 import ast
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -66,6 +68,7 @@ class CrossValidationScoringTests(unittest.TestCase):
             outer_random_splits=2,
             search_iterations=1,
             search_scoring='age_conditioned_auroc',
+            optimize_hyperparameter_search=True,
         )
         runner = EnsembleCrossValidator(
             config=config,
@@ -85,7 +88,7 @@ class CrossValidationScoringTests(unittest.TestCase):
         with patch('src.pipeline.cross_validation.RandomizedSearchCV') as search_class:
             search_class.return_value.best_params_ = {'model__max_depth': 3}
             search_class.return_value.best_score_ = 0.75
-            params, score = runner._search_hyperparams(features, labels)
+            params, score = runner._select_final_params(features, labels)
 
         estimator = search_class.call_args.kwargs['estimator']
         self.assertIsInstance(estimator, Pipeline)
@@ -98,83 +101,71 @@ class CrossValidationScoringTests(unittest.TestCase):
         self.assertEqual(scorer.age_feature_scale, 10.0)
         search_class.return_value.fit.assert_called_once()
 
+    def test_final_search_is_independent_from_oof_evaluation(self):
+        features = np.arange(16, dtype=np.float32).reshape(8, 2)
+        labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
+        feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
+
+        def run_with_final_params(final_params):
+            search_calls = []
+
+            def record_search(search_features, search_labels, **kwargs):
+                search_calls.append((np.asarray(search_features).copy(), np.asarray(search_labels).copy()))
+                if len(search_calls) == 1:
+                    return {'max_depth': 1}, 0.61
+                if len(search_calls) == 2:
+                    return {'max_depth': 2}, 0.62
+                return final_params, 0.99
+
+            runner = EnsembleCrossValidator(
+                config=CrossValidationConfig(
+                    search_scoring='roc_auc',
+                    use_site_grouped_cv=False,
+                    optimize_hyperparameter_search=True,
+                    outer_random_splits=2,
+                ),
+                param_dist={'max_depth': [1, 2]},
+                default_threshold=0.5,
+                build_preprocessor=lambda *args: None,
+                build_search_model=lambda fold_labels: object(),
+                fit_ensemble=lambda values, fold_labels, indices, final_params=None: {
+                    'params': dict(final_params),
+                },
+                predict_probabilities=lambda bundle, values: np.full(
+                    len(values), bundle['models']['params']['max_depth'] / 10.0,
+                ),
+            )
+            with patch.object(runner, '_search_hyperparams', side_effect=record_search):
+                with redirect_stdout(io.StringIO()):
+                    result = runner.run(
+                        features,
+                        labels,
+                        feature_indices,
+                        modality_presence_indices=feature_indices,
+                    )
+            return result, search_calls
+
+        first_result, first_search_calls = run_with_final_params({'max_depth': 3})
+        second_result, second_search_calls = run_with_final_params({'max_depth': 9})
+
+        self.assertEqual(first_result.final_params, {'max_depth': 3})
+        self.assertEqual(second_result.final_params, {'max_depth': 9})
+        self.assertEqual(first_result.final_search_score, 0.99)
+        self.assertEqual(first_result.metrics['selected_params_per_fold'][0]['params'], {'max_depth': 1})
+        self.assertEqual(first_result.metrics['selected_params_per_fold'][1]['params'], {'max_depth': 2})
+        self.assertEqual(first_result.metrics['oof_calibrated_metrics'], second_result.metrics['oof_calibrated_metrics'])
+        self.assertEqual(first_result.metrics['fold_metrics'], second_result.metrics['fold_metrics'])
+        self.assertTrue(np.array_equal(first_search_calls[-1][0], features))
+        self.assertTrue(np.array_equal(first_search_calls[-1][1], labels))
+        self.assertTrue(np.array_equal(second_search_calls[-1][0], features))
+        self.assertFalse(hasattr(EnsembleCrossValidator, '_consensus_params'))
+
     def test_standard_auroc_selector_keeps_sklearn_string(self):
         self.assertEqual(resolve_search_scoring('roc_auc'), 'roc_auc')
 
     def test_unknown_selector_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'Unsupported CV search scoring selector'):
             resolve_search_scoring('not-a-metric')
-
-    def test_consensus_selects_most_frequent_complete_configuration(self):
-        runner = self._build_consensus_runner()
-        configuration_a = {'n_estimators': 100, 'max_depth': 3, 'learning_rate': 0.03}
-        selected = [
-            {'fold': 1, 'params': configuration_a, 'score': 0.71},
-            {'fold': 2, 'params': configuration_a, 'score': 0.73},
-            {'fold': 3, 'params': {'n_estimators': 800, 'max_depth': 5, 'learning_rate': 0.30}, 'score': 0.90},
-            {'fold': 4, 'params': {'n_estimators': 1000, 'max_depth': 10, 'learning_rate': 0.01}, 'score': 0.80},
-            {'fold': 5, 'params': {'n_estimators': 1000, 'max_depth': 3, 'learning_rate': 0.01}, 'score': 0.85},
-        ]
-
-        consensus, frequency, folds, mean_score = runner._consensus_params(selected)
-
-        self.assertEqual(consensus, configuration_a)
-        self.assertEqual(frequency, 2)
-        self.assertEqual(folds, [1, 2])
-        self.assertAlmostEqual(mean_score, 0.72)
-        self.assertIn(consensus, [item['params'] for item in selected])
-
-    def test_consensus_uses_best_score_when_all_configurations_differ(self):
-        runner = self._build_consensus_runner()
-        selected = [
-            {'fold': 1, 'params': {'max_depth': 3}, 'score': 0.70},
-            {'fold': 2, 'params': {'max_depth': 5}, 'score': 0.92},
-            {'fold': 3, 'params': {'max_depth': 7}, 'score': 0.80},
-        ]
-
-        consensus, _, _, _ = runner._consensus_params(selected)
-
-        self.assertEqual(consensus, {'max_depth': 5})
-        self.assertIn(consensus, [item['params'] for item in selected])
-
-    def test_consensus_uses_mean_score_to_break_frequency_tie(self):
-        runner = self._build_consensus_runner()
-        selected = [
-            {'fold': 1, 'params': {'max_depth': 3}, 'score': 0.70},
-            {'fold': 2, 'params': {'max_depth': 5}, 'score': 0.85},
-            {'fold': 3, 'params': {'max_depth': 3}, 'score': 0.80},
-            {'fold': 4, 'params': {'max_depth': 5}, 'score': 0.95},
-        ]
-
-        consensus, frequency, folds, mean_score = runner._consensus_params(selected)
-
-        self.assertEqual(consensus, {'max_depth': 5})
-        self.assertEqual(frequency, 2)
-        self.assertEqual(folds, [2, 4])
-        self.assertAlmostEqual(mean_score, 0.90)
-
-    def test_consensus_uses_first_fold_to_break_score_tie_deterministically(self):
-        runner = self._build_consensus_runner()
-        selected = [
-            {'fold': 1, 'params': {'max_depth': 3}, 'score': 0.80},
-            {'fold': 2, 'params': {'max_depth': 5}, 'score': 0.80},
-        ]
-
-        consensus, _, folds, _ = runner._consensus_params(selected)
-
-        self.assertEqual(consensus, {'max_depth': 3})
-        self.assertEqual(folds, [1])
-
-    def _build_consensus_runner(self):
-        return EnsembleCrossValidator(
-            config=CrossValidationConfig(search_scoring='roc_auc'),
-            param_dist={},
-            default_threshold=0.5,
-            build_preprocessor=lambda *args: None,
-            build_search_model=lambda labels: object(),
-            fit_ensemble=lambda *args, **kwargs: {},
-            predict_probabilities=lambda *args, **kwargs: None,
-        )
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -28,7 +28,8 @@ class CrossValidationConfig:
 @dataclass(frozen=True)
 class CrossValidationResult:
     threshold: float
-    consensus_params: Optional[dict[str, Any]]
+    final_params: Optional[dict[str, Any]]
+    final_search_score: Optional[float]
     metrics: dict[str, Any]
 
 
@@ -113,7 +114,8 @@ class EnsembleCrossValidator:
         if unique_sites.size < 2:
             return CrossValidationResult(
                 threshold=self.default_threshold,
-                consensus_params=None,
+                final_params=None,
+                final_search_score=None,
                 metrics={
                     'skipped': True,
                     'cv_strategy': 'grouped_by_site',
@@ -126,7 +128,8 @@ class EnsembleCrossValidator:
         if len(classes) != 2:
             return CrossValidationResult(
                 threshold=self.default_threshold,
-                consensus_params=None,
+                final_params=None,
+                final_search_score=None,
                 metrics={
                     'skipped': True,
                     'cv_strategy': 'grouped_by_site',
@@ -146,7 +149,7 @@ class EnsembleCrossValidator:
                 label=held_out_site,
             ))
 
-        consensus, selected_params_per_fold = self._select_consensus_params(
+        selected_params_per_fold = self._select_fold_params(
             split_plan,
             features,
             labels,
@@ -167,8 +170,7 @@ class EnsembleCrossValidator:
             extra_metric_fields=lambda split: {'held_out_site': split.label},
         )
 
-        return self._finalize_result(
-            consensus_params=consensus,
+        result = self._finalize_result(
             labels=labels,
             oof_probabilities=oof_probabilities,
             routed_model_oof=routed_model_oof,
@@ -180,6 +182,13 @@ class EnsembleCrossValidator:
                 'n_splits': int(len(split_plan)),
                 'site_groups': unique_sites.tolist(),
             },
+        )
+        return self._complete_final_model_selection(
+            result,
+            features,
+            labels,
+            categorical_indices=categorical_indices,
+            site_groups=site_groups,
         )
 
     def _run_random_cv(
@@ -194,7 +203,8 @@ class EnsembleCrossValidator:
         if outer_cv is None:
             return CrossValidationResult(
                 threshold=self.default_threshold,
-                consensus_params=None,
+                final_params=None,
+                final_search_score=None,
                 metrics={
                     'skipped': True,
                     'cv_strategy': 'random_stratified',
@@ -212,7 +222,7 @@ class EnsembleCrossValidator:
             )
             for fold_idx, (train_idx, val_idx) in enumerate(outer_cv.split(features, labels), start=1)
         ]
-        consensus, selected_params_per_fold = self._select_consensus_params(
+        selected_params_per_fold = self._select_fold_params(
             split_plan,
             features,
             labels,
@@ -232,8 +242,7 @@ class EnsembleCrossValidator:
             label_prefix='random split',
         )
 
-        return self._finalize_result(
-            consensus_params=consensus,
+        result = self._finalize_result(
             labels=labels,
             oof_probabilities=oof_probabilities,
             routed_model_oof=routed_model_oof,
@@ -245,8 +254,14 @@ class EnsembleCrossValidator:
                 'n_splits': int(n_splits),
             },
         )
+        return self._complete_final_model_selection(
+            result,
+            features,
+            labels,
+            categorical_indices=categorical_indices,
+        )
 
-    def _select_consensus_params(
+    def _select_fold_params(
         self,
         split_plan,
         features,
@@ -259,7 +274,7 @@ class EnsembleCrossValidator:
         if not self.config.optimize_hyperparameter_search:
             fixed_params = dict(self.config.fixed_hyperparameters)
             print(f"  Hyperparameter search disabled. Using fixed parameters: {fixed_params}")
-            return fixed_params, [
+            return [
                 {
                     'fold': int(split.fold_index),
                     'label': split.label,
@@ -293,13 +308,7 @@ class EnsembleCrossValidator:
                 'source': 'search',
             })
 
-        consensus, frequency, selected_folds, mean_score = self._consensus_params(selected_params_per_fold)
-        print('  Final hyperparameter selection:')
-        print(f"    Configuration frequency: {frequency}/{len(selected_params_per_fold)} folds")
-        print(f"    Selected from folds: {selected_folds}")
-        print(f"    Mean inner-CV score: {mean_score:.3f}")
-        print(f"    Consensus hyperparameters: {consensus}")
-        return consensus, selected_params_per_fold
+        return selected_params_per_fold
     
     def _evaluate_with_fold_params(
         self,
@@ -358,7 +367,7 @@ class EnsembleCrossValidator:
                 print(f"    Variables fijas detectadas. Usando {X_train_proc.shape[1]} características fijas.")
 
             fit_kwargs = {
-                'consensus_params': params_by_fold[int(split.fold_index)],
+                'final_params': params_by_fold[int(split.fold_index)],
             }
             if self.fit_ensemble_handles_preprocessing:
                 fit_kwargs.update({
@@ -442,9 +451,7 @@ class EnsembleCrossValidator:
 
         return fold_metrics, oof_probabilities, routed_model_oof
     
-    def _finalize_result(self, consensus_params, labels, ages, oof_probabilities, routed_model_oof, best_params_per_fold, fold_metrics, metadata):
-        consensus = dict(consensus_params or {})
-
+    def _finalize_result(self, labels, ages, oof_probabilities, routed_model_oof, best_params_per_fold, fold_metrics, metadata):
         fold_metric_summary = self._summarize_metrics(fold_metrics)
         self._print_metric_summary("  Mean fold metrics:", fold_metric_summary)
 
@@ -497,8 +504,59 @@ class EnsembleCrossValidator:
         }
         return CrossValidationResult(
             threshold=threshold,
-            consensus_params=consensus,
+            final_params=None,
+            final_search_score=None,
             metrics=metrics,
+        )
+
+    def _complete_final_model_selection(
+        self,
+        result,
+        features,
+        labels,
+        categorical_indices=None,
+        site_groups=None,
+    ):
+        oof_score = result.metrics['oof_calibrated_metrics']['age_conditioned_auroc']
+        print('\nNested CV complete:')
+        print(f"  OOF Age-conditioned AUROC: {self._format_metric_value(oof_score)}")
+        print('\nOuter-fold hyperparameter selections:')
+        for selection in result.metrics['selected_params_per_fold']:
+            score = selection.get('score')
+            score_text = '' if score is None else f" score={self._format_metric_value(score)}"
+            print(f"  Fold {selection['fold']}: {selection['params']}{score_text}")
+
+        print('\nRunning final hyperparameter search on all training data...')
+        final_params, final_search_score = self._select_final_params(
+            features,
+            labels,
+            categorical_indices=categorical_indices,
+            site_groups=site_groups,
+        )
+        print(f"  Best final parameters: {final_params}")
+        print(f"  Final CV search score: {self._format_metric_value(final_search_score)}")
+
+        metrics = dict(result.metrics)
+        metrics.update({
+            'final_params': dict(final_params),
+            'final_search_score': final_search_score,
+        })
+        return replace(
+            result,
+            final_params=dict(final_params),
+            final_search_score=final_search_score,
+            metrics=metrics,
+        )
+
+    def _select_final_params(self, features, labels, categorical_indices=None, site_groups=None):
+        if not self.config.optimize_hyperparameter_search:
+            return dict(self.config.fixed_hyperparameters), float('nan')
+
+        return self._search_hyperparams(
+            features,
+            labels,
+            site_groups=site_groups,
+            categorical_indices=categorical_indices,
         )
 
     def _get_model_feature_indices(self, model_name, feature_indices):
@@ -686,57 +744,6 @@ class EnsembleCrossValidator:
             }
 
         return summary
-
-    def _consensus_params(self, selected_params_per_fold):
-        configurations = {}
-        for selected in selected_params_per_fold:
-            params = dict(selected['params'])
-            configuration_key = tuple(
-                sorted((key, self._freeze_param_value(value)) for key, value in params.items())
-            )
-            configurations.setdefault(configuration_key, []).append({
-                'fold': int(selected['fold']),
-                'params': params,
-                'score': float(selected.get('score', np.nan)),
-            })
-
-        def configuration_rank(occurrences):
-            scores = np.asarray([entry['score'] for entry in occurrences], dtype=float)
-            mean_score = float(np.mean(scores)) if np.all(np.isfinite(scores)) else -np.inf
-            first_fold = min(entry['fold'] for entry in occurrences)
-            return len(occurrences), mean_score, -first_fold
-
-        winning_occurrences = max(configurations.values(), key=configuration_rank)
-        winning_scores = np.asarray(
-            [entry['score'] for entry in winning_occurrences],
-            dtype=float,
-        )
-        mean_score = (
-            float(np.mean(winning_scores))
-            if np.all(np.isfinite(winning_scores))
-            else float('nan')
-        )
-        return (
-            dict(winning_occurrences[0]['params']),
-            len(winning_occurrences),
-            [entry['fold'] for entry in winning_occurrences],
-            mean_score,
-        )
-
-    def _freeze_param_value(self, value):
-        if isinstance(value, np.generic):
-            return value.item()
-        if isinstance(value, np.ndarray):
-            return tuple(self._freeze_param_value(item) for item in value.tolist())
-        if isinstance(value, dict):
-            return tuple(
-                sorted((key, self._freeze_param_value(item)) for key, item in value.items())
-            )
-        if isinstance(value, (list, tuple)):
-            return tuple(self._freeze_param_value(item) for item in value)
-        if isinstance(value, set):
-            return tuple(sorted(self._freeze_param_value(item) for item in value))
-        return value
 
     def _format_metric_value(self, value):
         return 'nan' if value is None or not np.isfinite(value) else f'{value:.3f}'

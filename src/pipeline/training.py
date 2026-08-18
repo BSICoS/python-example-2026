@@ -232,8 +232,8 @@ def _build_xgb_model(labels, extra_params=None):
                 
     return XGBClassifier(**base_params)
 
-def _fit_model(feature_matrix, labels, consensus_params=None):
-    model = _build_xgb_model(labels, extra_params=consensus_params) 
+def _fit_model(feature_matrix, labels, final_params=None):
+    model = _build_xgb_model(labels, extra_params=final_params)
     model.fit(feature_matrix, labels)   
     
     return model
@@ -301,7 +301,7 @@ def _get_route_categorical_indices(raw_indices, categorical_indices):
     ]
 
 
-def _fit_route_model(route_features, route_labels, raw_indices, categorical_indices, consensus_params):
+def _fit_route_model(route_features, route_labels, raw_indices, categorical_indices, final_params):
     route_preprocessor = build_preprocessor(
         len(route_labels),
         _get_route_categorical_indices(raw_indices, categorical_indices),
@@ -311,7 +311,7 @@ def _fit_route_model(route_features, route_labels, raw_indices, categorical_indi
         dtype=np.float32,
     )
     return {
-        'model': _fit_model(processed_features, route_labels, consensus_params),
+        'model': _fit_model(processed_features, route_labels, final_params),
         'preprocessor': route_preprocessor,
         'raw_indices': np.asarray(raw_indices, dtype=np.int32),
         'n_train': int(len(route_labels)),
@@ -325,7 +325,7 @@ def _fit_ensemble(
     feature_matrix,
     labels,
     feature_indices,
-    consensus_params=None,
+    final_params=None,
     modality_presence_indices=None,
     categorical_indices=None,
 ):
@@ -356,7 +356,7 @@ def _fit_ensemble(
             route_labels,
             raw_indices,
             categorical_indices,
-            consensus_params,
+            final_params,
         )
         
     return models
@@ -669,7 +669,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         search_age_feature_offset=0.0,
     )
 
-    # --- Step 1: Leakage-free nested CV for calibration and hyperparameter consensus ---
+    # --- Step 1: Leakage-free nested CV for evaluation and final model selection ---
     print("Running nested CV with fold-specific preprocessing...")
     cv_result = cv_runner.run(
         features,
@@ -680,7 +680,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         site_groups=site_groups,
     )
     threshold = cv_result.threshold
-    consensus = cv_result.consensus_params
+    final_params = cv_result.final_params
     cv_metrics = cv_result.metrics
 
     # This preprocessor is retained for feature exports only. Each deployed route
@@ -731,12 +731,12 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
 
 
     # --- Step 2: Fit each model on patients with its required signal modalities ---
-    print("Fitting signal-specific ensemble routes with consensus hyperparameters...")
+    print("Fitting final ensemble on all training data...")
     models = _fit_ensemble(
         features,
         labels,
         feature_indices,
-        consensus_params=consensus,
+        final_params=final_params,
         modality_presence_indices=modality_presence_indices,
         categorical_indices=categorical_indices,
     )
