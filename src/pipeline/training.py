@@ -375,26 +375,21 @@ def _select_ensemble_model_name(raw_feature_vector, models, modality_presence_in
         and _has_modality_signal(raw_feature_vector, modality_presence_indices[modality])
     }
 
-    candidate_models = {
-        frozenset(('ecg', 'eeg', 'resp')): 'all',
-        frozenset(('ecg', 'eeg')): 'ecg_eeg',
-        frozenset(('ecg', 'resp')): 'ecg_resp',
-        frozenset(('eeg', 'resp')): 'eeg_resp',
-        frozenset(('ecg',)): 'ecg',
-        frozenset(('eeg',)): 'eeg',
-        frozenset(('resp',)): 'resp',
-    }
-    for modalities, model_name in candidate_models.items():
-        if modalities == active_modalities and model_name in models:
+    # Prefer ECG+EEG whenever possible; RESP may still support ECG feature extraction,
+    # but its standalone feature block is not part of the preferred XGBoost route.
+    candidate_models = (
+        (frozenset(('ecg', 'eeg')), 'ecg_eeg'),
+        (frozenset(('eeg',)), 'eeg'),
+        (frozenset(('ecg',)), 'ecg'),
+        (frozenset(('ecg', 'eeg', 'resp')), 'all'),
+        (frozenset(('ecg', 'resp')), 'ecg_resp'),
+        (frozenset(('eeg', 'resp')), 'eeg_resp'),
+        (frozenset(('resp',)), 'resp'),
+    )
+    for modalities, model_name in candidate_models:
+        if modalities.issubset(active_modalities) and model_name in models:
             return model_name
 
-    available_candidates = [
-        (len(modalities), model_name)
-        for modalities, model_name in candidate_models.items()
-        if modalities.issubset(active_modalities) and model_name in models
-    ]
-    if available_candidates:
-        return max(available_candidates)[1]
     return 'all' if 'all' in models else next(iter(models))
 
 

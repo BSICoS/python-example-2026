@@ -8,7 +8,7 @@ from sklearn.base import clone
 
 from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator, FoldSplit
 from src.pipeline.preprocessing import CorrelationAwarePreprocessor
-from src.pipeline.training import _fit_ensemble
+from src.pipeline.training import _fit_ensemble, _select_ensemble_model_name
 
 
 class _RecordingPreprocessor(CorrelationAwarePreprocessor):
@@ -235,6 +235,42 @@ class PreprocessingLeakageTests(unittest.TestCase):
         self.assertEqual(models['all']['n_train'], 2)
         self.assertEqual(len(fitted_labels), len(models))
         self.assertEqual(fitted_params, [final_params] * len(models))
+
+    def test_model_routing_prioritizes_ecg_eeg_over_respiration_routes(self):
+        models = {
+            name: object()
+            for name in ('ecg', 'eeg', 'resp', 'ecg_eeg', 'ecg_resp', 'eeg_resp', 'all')
+        }
+        modality_presence_indices = {
+            'ecg': np.array([0], dtype=np.int32),
+            'eeg': np.array([1], dtype=np.int32),
+            'resp': np.array([2], dtype=np.int32),
+        }
+
+        self.assertEqual(
+            _select_ensemble_model_name(
+                np.array([1.0, 1.0, 1.0], dtype=np.float32),
+                models,
+                modality_presence_indices,
+            ),
+            'ecg_eeg',
+        )
+        self.assertEqual(
+            _select_ensemble_model_name(
+                np.array([np.nan, 1.0, 1.0], dtype=np.float32),
+                models,
+                modality_presence_indices,
+            ),
+            'eeg',
+        )
+        self.assertEqual(
+            _select_ensemble_model_name(
+                np.array([1.0, np.nan, 1.0], dtype=np.float32),
+                models,
+                modality_presence_indices,
+            ),
+            'ecg',
+        )
 
 
 if __name__ == '__main__':
