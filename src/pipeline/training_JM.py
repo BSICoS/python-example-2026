@@ -16,7 +16,11 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from helper_code import DEMOGRAPHICS_FILE, HEADERS, find_patients, load_label
 
 from .config import MAX_TRAIN_WORKERS
-from .features import get_feature_group_indices, get_feature_names, get_or_create_record_feature_vector
+from .features import (
+    FEATURE_NAME_GROUPS,
+    get_feature_names,
+    get_or_create_record_feature_vector,
+)
 
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
@@ -125,24 +129,16 @@ def _build_xgb_model(labels):
         early_stopping_rounds=20)
 
 def preprocess_multimodal_data( df_model):
-    
-    #Llamamos al dataset de entrada que contiene las variables calculadas y confirma que no hay IDs duplicados
-    df_model2 = df_model.drop_duplicates(subset='ID')
-    # Extrae las columnas que se usarán
-    df_model2=df_model2[['ID','label', 'Age','Sex','Nasal_Peakedness_Max', 'Nasal_Peakedness_Min', 'Nasal_Peakedness_Median','Nasal_Peakedness_Std', 
-                        'Chest_Peakedness_Max', 'Chest_Peakedness_Min','Abdomen_Peakedness_Max','Abdomen_Peakedness_Min','Abdomen_Peakedness_Std',
-                        'Flow_Peakedness_Max','Flow_Peakedness_Min','Flow_Peakedness_Median','Flow_Peakedness_Std','SpO2_Max','SpO2_Min','SpO2_Std',
-                        'CET90','ODI_Mean','ODI_deepness','C3-M2_Hjorth_Complexity','C4-M1_Hjorth_Complexity','F3-M2_Hjorth_Complexity',
-                        'F4-M1_Hjorth_Complexity','C3-M2_Hjorth_Mobility','F3-M2_Hjorth_Mobility','F4-M1_Hjorth_Mobility','C3-M2_Ratio_Slow_Fast',
-                        'C4-M1_Ratio_Slow_Fast','F3-M2_Ratio_Slow_Fast','F4-M1_Ratio_Slow_Fast','C3-M2_Rel_Beta','F3-M2_Rel_Beta','F4-M1_Rel_Beta',
-                        'C4-M1_Rel_Sigma','F3-M2_Rel_Sigma','C3-M2_Relative_Delta_Power','C4-M1_Relative_Delta_Power','F3-M2_Relative_Delta_Power',
-                        'F4-M1_Relative_Delta_Power','C3-M2_Theta_Alpha_Ratio','C4-M1_Theta_Alpha_Ratio','F3-M2_Theta_Alpha_Ratio','F4-M1_Theta_Alpha_Ratio',
-                        'C3-M2_Theta_Beta_Ratio','C4-M1_Theta_Beta_Ratio','F3-M2_Theta_Beta_Ratio','F4-M1_Theta_Beta_Ratio','C3-M2_kurtosis_Alpha',
-                        'C3-M2_kurtosis_Beta','C4-M1_kurtosis_Beta','F3-M2_kurtosis_Beta','F4-M1_kurtosis_Beta','C3-M2_kurtosis_Delta','C4-M1_kurtosis_Delta',
-                        'F3-M2_kurtosis_Delta','F4-M1_kurtosis_Delta','C3-M2_kurtosis_Sigma','C4-M1_kurtosis_Sigma','F3-M2_kurtosis_Sigma','F4-M1_kurtosis_Sigma',
-                        'C3-M2_kurtosis_Theta','C4-M1_kurtosis_Theta','F3-M2_kurtosis_Theta','F4-M1_kurtosis_Theta','C3-M2_variability_Delta',
-                        'C4-M1_variability_Delta','F3-M2_variability_Delta','F4-M1_variability_Delta','PIP_med','PIP_std','PNNSS_med',
-                        'PNNSS_std','AVNN_med','AVNN_std','MHR_med','MHR_std','SDNN_med','SDNN_std','RMSSD_med','RMSSD_std','PNN50_med','PNN50_std','LF_med','LF_std','HF_RESP_med','HF_RESP_std','LFN_RESP_med','LFN_RESP_std','LFHF_RESP_med','LFHF_RESP_std','URLF_med','URLF_std','RE_med','RE_std','R_med','R_std','REMOVED_RR_PERCENTAGE_med','REMOVED_RR_PERCENTAGE_std']]
+    active_feature_names = list(get_feature_names())
+    required_columns = ['label', *active_feature_names]
+    missing_columns = [
+        column for column in required_columns if column not in df_model.columns
+    ]
+    if missing_columns:
+        raise ValueError(
+            f"Missing active pipeline features: {missing_columns}"
+        )
+    df_model2 = df_model.loc[:, required_columns].drop_duplicates()
 
 
     # Ajusta el tipo de dato, todas deben ser numericas excepto Sex, Label y ID. Sex y label tendría que ser logical? o categorical?
@@ -157,7 +153,7 @@ def preprocess_multimodal_data( df_model):
 
     #Procesa los datos, imputar nans y estandarizar por la media y desviacion estandar (zscore)
     y = df_model2['label']
-    X = df_model2.drop(columns=[ 'label','ID']) # Excluimos ID, label del entrenamiento
+    X = df_model2.drop(columns=['label'])
 
     return {"X": X,
             "y": y}
@@ -189,12 +185,22 @@ def prepare_multimodal_data(dddf, testsize=0.1):
     X_test = preprocessor.transform(X_test)
 
     feature_names = preprocessor.get_feature_names_out()
-    resp_mask = np.array([ any(k in col for k in ["Age","Sex","Nasal_Peakedness", "Chest_Peakedness", "Abdomen_Peakedness", "Flow_Peakedness", "SpO2", "CET90", "ODI" ])
-        for col in feature_names])
-    eeg_mask = np.array([ any(k in col for k in ["Age","Sex","C3-M2", "C4-M1", "F3-M2", "F4-M1"])
-        for col in feature_names])
-    ecg_mask = np.array([ any(k in col for k in ["Age","Sex","PIP_", "PNNSS_", "AVNN_", "MHR_", "SDNN_", "RMSSD_", "PNN50_", "LF_", "HF_RESP_", "LFN_RESP_", "LFHF_RESP_", "URLF_", "RE_", "R_", "REMOVED_RR_PERCENTAGE_"])
-        for col in feature_names])
+    demographic_features = set(FEATURE_NAME_GROUPS['demographics'])
+
+    def modality_mask(modality):
+        allowed_features = demographic_features | set(FEATURE_NAME_GROUPS[modality])
+        return np.array([
+            column.removeprefix('num__') in allowed_features
+            or (
+                column.startswith('cat__Sex_')
+                and 'Sex' in allowed_features
+            )
+            for column in feature_names
+        ])
+
+    resp_mask = modality_mask('resp')
+    eeg_mask = modality_mask('eeg')
+    ecg_mask = modality_mask('ecg')
 
     # Subsets finales
     return {
