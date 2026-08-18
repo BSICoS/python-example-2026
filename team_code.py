@@ -51,7 +51,10 @@ def _close_run_model_pbar():
         RUN_MODEL_EXPORT_STATE is not None
         and not RUN_MODEL_EXPORT_STATE['vlf_summary_written']
     ):
-        if RUN_MODEL_EXPORT_STATE['verbose']:
+        if (
+            RUN_MODEL_EXPORT_STATE['verbose']
+            and RUN_MODEL_EXPORT_STATE['extracted_feature_count']
+        ):
             tqdm.write(
                 "  ! excessive_vlf_power affected "
                 f"{RUN_MODEL_EXPORT_STATE['excessive_vlf_patient_count']} patients."
@@ -202,6 +205,7 @@ def run_model(model, record, data_folder, verbose):
             'preprocessor': model.get('preprocessor'),
             'verbose': verbose,
             'excessive_vlf_patient_count': 0,
+            'extracted_feature_count': 0,
             'vlf_summary_written': False,
         }
 
@@ -213,13 +217,15 @@ def run_model(model, record, data_folder, verbose):
     patient_data = load_demographics(patient_data_file, patient_id, session_id)
     with warnings.catch_warnings(record=True) as captured_warnings:
         warnings.simplefilter('always', FdMetricsWarning)
-        features = get_or_create_record_feature_vector(
+        features, cache_hit = get_or_create_record_feature_vector(
             record,
             data_folder,
             patient_data,
             csv_path=DEFAULT_CSV_PATH,
             require_physiological_data=False,
+            return_cache_hit=True,
         )
+    RUN_MODEL_EXPORT_STATE['extracted_feature_count'] += not cache_hit
     if any(
         issubclass(warning.category, FdMetricsWarning)
         and getattr(warning.message, 'warning_id', None) == 'excessive_vlf_power'

@@ -93,12 +93,13 @@ def process_training_record(record, data_folder, demographics_cache, diagnosis_c
         patient_data = demographics_cache.get((patient_id, session_id), {})
         with warnings.catch_warnings(record=True) as captured_warnings:
             warnings.simplefilter('always', FdMetricsWarning)
-            feature_vector = get_or_create_record_feature_vector(
+            feature_vector, cache_hit = get_or_create_record_feature_vector(
                 record,
                 data_folder,
                 patient_data,
                 csv_path=csv_path,
                 require_physiological_data=True,
+                return_cache_hit=True,
             )
         has_excessive_vlf_power = any(
             issubclass(warning.category, FdMetricsWarning)
@@ -114,22 +115,22 @@ def process_training_record(record, data_folder, demographics_cache, diagnosis_c
         }
 
         if label == 0 or label == 1:
-            return metadata, feature_vector, label, None, has_excessive_vlf_power
+            return metadata, feature_vector, label, None, has_excessive_vlf_power, cache_hit
 
-        return metadata, None, None, f"Invalid label for {patient_id}. Skipping...", has_excessive_vlf_power
+        return metadata, None, None, f"Invalid label for {patient_id}. Skipping...", has_excessive_vlf_power, cache_hit
 
     except FileNotFoundError as exc:
         return {
             'patient_id': patient_id,
             'site_id': site_id,
             'session_id': session_id,
-        }, None, None, f"{exc} Skipping...", False
+        }, None, None, f"{exc} Skipping...", False, False
     except Exception as exc:
         return {
             'patient_id': patient_id,
             'site_id': site_id,
             'session_id': session_id,
-        }, None, None, f"Error processing {patient_id}: {exc}", False
+        }, None, None, f"Error processing {patient_id}: {exc}", False, False
 
 def prepare_feature_matrix(feature_matrix, preprocessor=None):
     raw_feature_matrix = np.asarray(feature_matrix, dtype=np.float32)
@@ -564,6 +565,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     labels = []
     metadata_rows = []
     excessive_vlf_patient_count = 0
+    extracted_feature_count = 0
 
     with ThreadPoolExecutor(max_workers=MAX_TRAIN_WORKERS) as executor:
         futures = {
@@ -597,8 +599,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     for result in ordered_results:
         if result is None:
             continue
-        metadata, feature_vector, label, message, has_excessive_vlf_power = result
+        metadata, feature_vector, label, message, has_excessive_vlf_power, cache_hit = result
         excessive_vlf_patient_count += has_excessive_vlf_power
+        extracted_feature_count += not cache_hit
         if message is not None:
             tqdm.write(f"  ! {message}")
             continue
@@ -607,9 +610,10 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         labels.append(label)
         metadata_rows.append(metadata)
 
-    tqdm.write(
-        f"  ! excessive_vlf_power affected {excessive_vlf_patient_count} patients."
-    )
+    if extracted_feature_count:
+        tqdm.write(
+            f"  ! excessive_vlf_power affected {excessive_vlf_patient_count} patients."
+        )
 
     features = np.asarray(features, dtype=np.float32)
     labels = np.asarray(labels, dtype=np.int32)

@@ -473,14 +473,21 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
 
     return combined
 
-def get_or_create_record_feature_vector(record, data_folder, patient_data, csv_path=DEFAULT_CSV_PATH, require_physiological_data=True):
+def get_or_create_record_feature_vector(
+    record,
+    data_folder,
+    patient_data,
+    csv_path=DEFAULT_CSV_PATH,
+    require_physiological_data=True,
+    return_cache_hit=False,
+):
     patient_id = record[HEADERS['bids_folder']]
     site_id = record[HEADERS['site_id']]
     session_id = record[HEADERS['session_id']]
     cache_file = _get_feature_cache_file(data_folder, site_id, patient_id, session_id)
     cached_features = _load_cached_feature_vector(cache_file)
     if cached_features is not None:
-        return cached_features
+        return (cached_features, True) if return_cache_hit else cached_features
 
     feature_vector = _compute_record_feature_vector(
         patient_data,
@@ -492,4 +499,4 @@ def get_or_create_record_feature_vector(record, data_folder, patient_data, csv_p
         require_physiological_data,
     )
     _save_cached_feature_vector(cache_file, feature_vector)
-    return feature_vector
+    return (feature_vector, False) if return_cache_hit else feature_vector
