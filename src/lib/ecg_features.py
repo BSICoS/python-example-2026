@@ -108,10 +108,6 @@ def compute_ecg_features(
 
     return np.array(
         [
-            metrics["PIP"],
-            metrics["PNNLS"],
-            metrics["PNNSS"],
-            metrics["AVNN"],
             metrics["MHR"],
             metrics["SDNN"],
             metrics["RMSSD"],
@@ -119,11 +115,9 @@ def compute_ecg_features(
             frequency_metrics["LF"],
             frequency_metrics["HF_RESP"],
             frequency_metrics["LFN_RESP"],
-            frequency_metrics["LFHF_RESP"],
             frequency_metrics["URLF"],
             frequency_metrics["RE"],
             frequency_metrics["R"],
-            time_domain.removed_rr_percentage,
             ecg_age,
         ],
         dtype=np.float32,

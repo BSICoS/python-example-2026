@@ -28,10 +28,13 @@ def _synthetic_ecg(duration_seconds=300, fs=200):
     return ecg
 
 
-def test_removed_rr_feature_uses_its_actual_semantics():
-    assert ECG_SEGMENT_FEATURE_NAMES[15] == "REMOVED_RR_PERCENTAGE"
+def test_ecg_feature_schema_excludes_removed_rr_percentage():
+    assert "REMOVED_RR_PERCENTAGE" not in ECG_SEGMENT_FEATURE_NAMES
     assert "ECTOPIC" not in ECG_SEGMENT_FEATURE_NAMES
     assert "REMOVED_FP" not in ECG_SEGMENT_FEATURE_NAMES
+    assert {"PIP", "PNNLS", "PNNSS", "AVNN"}.isdisjoint(
+        ECG_SEGMENT_FEATURE_NAMES
+    )
     assert {"MHR", "PNN50"}.issubset(
         ECG_SEGMENT_FEATURE_NAMES
     )
@@ -42,12 +45,11 @@ def test_removed_rr_feature_uses_its_actual_semantics():
         "LF",
         "HF_RESP",
         "LFN_RESP",
-        "LFHF_RESP",
         "URLF",
         "RE",
         "R",
     }.issubset(ECG_SEGMENT_FEATURE_NAMES)
-    assert ECG_SEGMENT_FEATURE_LENGTH == 17
+    assert ECG_SEGMENT_FEATURE_LENGTH == 11
 
 
 def test_pan_tompkins_returns_refined_outputs():

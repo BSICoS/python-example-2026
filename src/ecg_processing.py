@@ -6,10 +6,6 @@ from src.resp_processing import select_best_respiration_signal
 ECG_KEYWORDS = ['ecg', 'ekg']
 
 ECG_SEGMENT_FEATURE_NAMES = [
-    "PIP",
-    "PNNLS",
-    "PNNSS",
-    "AVNN",
     "MHR",
     "SDNN",
     "RMSSD",
@@ -17,11 +13,9 @@ ECG_SEGMENT_FEATURE_NAMES = [
     "LF",
     "HF_RESP",
     "LFN_RESP",
-    "LFHF_RESP",
     "URLF",
     "RE",
     "R",
-    "REMOVED_RR_PERCENTAGE",
     "ECGage",
 ]
 ECG_SEGMENT_FEATURE_LENGTH = len(ECG_SEGMENT_FEATURE_NAMES)
