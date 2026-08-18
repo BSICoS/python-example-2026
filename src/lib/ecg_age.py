@@ -9,6 +9,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 WEIGHT_PATH = os.path.join(CURRENT_DIR, 'model.pth')
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+_DEVICE_LOGGED = False
 
 N_LEADS = 1
 SEQ_LEN = 2000  # Fijo para PROPHECG (10s a 200 Hz)
@@ -37,6 +38,8 @@ def load_prophecg_model():
 MODEL = load_prophecg_model()
 
 def compute_ecgage(ecg_signal):
+    global _DEVICE_LOGGED
+
     # 1) Asegurar que la longitud sea exactamente 2000 muestras
     if len(ecg_signal) > SEQ_LEN:
         ecg_signal = ecg_signal[:SEQ_LEN]
@@ -50,9 +53,9 @@ def compute_ecgage(ecg_signal):
 
     ecg_proc = normalize(ecg_signal)
 
-    # 2) Dispositivo e Hiperparámetros
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device:", device)
+    if not _DEVICE_LOGGED:
+        print("Using device:", DEVICE)
+        _DEVICE_LOGGED = True
 
     # 3) Convertir la señal procesada a Tensor
     x = torch.from_numpy(ecg_proc.astype('float32')).unsqueeze(0).unsqueeze(0).to(DEVICE)
