@@ -102,20 +102,23 @@ evaluate_predictions_dev() {
     local code_path="$1"
     local data_path="$2"
     local output_path="$3"
-    local label="$4"
-    local code_path_docker data_path_docker
+    local prevalence_path="$4"
+    local label="$5"
+    local code_path_docker data_path_docker prevalence_path_docker
 
     code_path_docker="$(to_docker_path "$code_path")"
     data_path_docker="$(to_docker_path "$data_path")"
+    prevalence_path_docker="$(to_docker_path "$prevalence_path")"
 
     echo "Evaluating ${label} predictions..."
     docker_cli run --rm \
         -v "${code_path_docker}:/challenge" \
         -v "${data_path_docker}:/challenge/eval_data:ro" \
+        -v "${prevalence_path_docker}:/challenge/prevalence_data:ro" \
         "$IMAGE_NAME" \
         python evaluate_model.py \
             -d "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
-            -p "/challenge/eval_data/${DEMOGRAPHICS_FILE}" \
+            -p "/challenge/prevalence_data/${DEMOGRAPHICS_FILE}" \
             -o "$output_path/${DEMOGRAPHICS_FILE}"
 }
 
@@ -293,60 +296,71 @@ eval_smoke() {
 }
 
 # =====================
-# DEVELOPMENT MODE (NO REBUILD)
+# DEVELOPMENT MODE (NO REBUILD, FULL DATASETS)
 # =====================
 
 train_dev() {
-    local code_path smoke_data model_smoke
-    local code_path_docker smoke_data_docker
+    local code_path full_data model_full
+    local code_path_docker full_data_docker
 
     code_path="$(get_absolute_path ".")"
-    smoke_data="$(get_absolute_path "$SMOKE_DATA_REL")"
-    model_smoke="${code_path}/${MODEL_SMOKE_REL}"
+    full_data="$(get_absolute_path "$TRAIN_DATA_REL")"
+    model_full="${code_path}/${MODEL_FULL_REL}"
     code_path_docker="$(to_docker_path "$code_path")"
-    smoke_data_docker="$(to_docker_path "$smoke_data")"
+    full_data_docker="$(to_docker_path "$full_data")"
 
-    ensure_directory "$model_smoke"
+    ensure_directory "$model_full"
 
     configure_gpu_args
 
     docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${code_path_docker}:/challenge" \
-        -v "${smoke_data_docker}:/challenge/data_smoke:ro" \
+        -v "${full_data_docker}:/challenge/training_data:ro" \
         "$IMAGE_NAME" \
-        python train_model.py -d /challenge/data_smoke -m /challenge/model_smoke -v
+        python train_model.py -d /challenge/training_data -m /challenge/model -v
 }
 
 run_dev() {
-    local code_path smoke_data out_smoke
-    local code_path_docker smoke_data_docker
+    local code_path run_data model_full out_full prevalence_data
+    local code_path_docker run_data_docker
 
     code_path="$(get_absolute_path ".")"
-    smoke_data="$(get_absolute_path "$SMOKE_DATA_REL")"
-    out_smoke="${code_path}/${OUT_SMOKE_REL}"
+    run_data="$(get_absolute_path "$RUN_DATA_REL")"
+    model_full="${code_path}/${MODEL_FULL_REL}"
+    out_full="${code_path}/${OUT_FULL_REL}"
+    prevalence_data="$(get_absolute_path "$TRAIN_DATA_REL")"
     code_path_docker="$(to_docker_path "$code_path")"
-    smoke_data_docker="$(to_docker_path "$smoke_data")"
+    run_data_docker="$(to_docker_path "$run_data")"
 
-    ensure_directory "$out_smoke"
+    ensure_directory "$out_full"
 
     configure_gpu_args
 
     docker_cli run --rm "${GPU_ARGS[@]}" \
         -v "${code_path_docker}:/challenge" \
-        -v "${smoke_data_docker}:/challenge/data_smoke:ro" \
+        -v "${run_data_docker}:/challenge/holdout_data:ro" \
         "$IMAGE_NAME" \
-        python run_model.py -d /challenge/data_smoke -m /challenge/model_smoke -o /challenge/outputs_smoke -v
+        python run_model.py -d /challenge/holdout_data -m /challenge/model -o /challenge/outputs -v
 
-    evaluate_predictions_dev "$code_path" "$smoke_data" "/challenge/outputs_smoke" "development smoke"
+    if dataset_has_labels "$run_data"; then
+        evaluate_predictions_dev "$code_path" "$run_data" "/challenge/outputs" "$prevalence_data" "development run-dataset"
+    else
+        echo "Skipping evaluation..."
+    fi
 }
 
 eval_dev() {
-    local code_path smoke_data
+    local code_path run_data prevalence_data
 
     code_path="$(get_absolute_path ".")"
-    smoke_data="$(get_absolute_path "$SMOKE_DATA_REL")"
+    run_data="$(get_absolute_path "$RUN_DATA_REL")"
+    prevalence_data="$(get_absolute_path "$TRAIN_DATA_REL")"
 
-    evaluate_predictions_dev "$code_path" "$smoke_data" "/challenge/outputs_smoke" "development smoke"
+    if dataset_has_labels "$run_data"; then
+        evaluate_predictions_dev "$code_path" "$run_data" "/challenge/outputs" "$prevalence_data" "development run-dataset"
+    else
+        echo "Skipping evaluation..."
+    fi
 }
 
 clean_all() {

@@ -20,13 +20,13 @@ Entradas:
 Salidas:
 
 - `model/` y `outputs/` (flujo completo)
-- `model_smoke/` y `outputs_smoke/` (flujo smoke/desarrollo)
+- `model_smoke/` y `outputs_smoke/` (flujo smoke)
 
 ## Orden recomendado de ejecución
 
 1. Construir imagen Docker (`build`)
 2. Preparar dataset smoke (`smoke`)
-3. Iterar en modo desarrollo (smoke) (`train-dev` / `run-dev`)
+3. Iterar en modo desarrollo con datasets completos (`train-dev` / `run-dev`)
 4. Ejecutar validación completa (`train` / `run`)
 5. Limpiar artefactos cuando corresponda (`clean`)
 

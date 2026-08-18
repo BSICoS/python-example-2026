@@ -47,40 +47,39 @@ Ejecutar la primera vez y cada vez que cambien `requirements.txt` o `Dockerfile`
 
 Genera `data/training_smoke/`.
 
-## 2) Ciclo en modo desarrollo (smoke)
+## 2) Ciclo en modo desarrollo (datasets completos, sin rebuild)
 
-### Entrenar en modo desarrollo (smoke)
+### Entrenar en modo desarrollo
 
 ```bash
 ./run.sh train-dev
 ```
 
-Usa `data/training_smoke/` y guarda modelo en `model_smoke/`.
+Usa `data/training_set/` y guarda modelo en `model/`. El código fuente se monta en el contenedor, por lo que no requiere reconstruir la imagen tras cambios de Python.
 
-### Generar predicciones (inferencia) en modo desarrollo (smoke)
+### Generar predicciones (inferencia) en modo desarrollo
 
 ```bash
 ./run.sh run-dev
 ```
 
-Genera resultados en `outputs_smoke/` y luego imprime métricas de evaluación en consola.
+Genera resultados en `outputs/`. Si `data/test_set/` tiene etiquetas, también imprime métricas de evaluación.
 
-### Evaluar predicciones existentes en modo desarrollo (smoke)
+### Evaluar predicciones existentes en modo desarrollo
 
 ```bash
 ./run.sh eval-dev
 ```
 
-Reutiliza `outputs_smoke/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
+Reutiliza `outputs/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia si `data/test_set/` contiene etiquetas.
 
-### Secuencia típica en modo desarrollo (smoke)
+### Secuencia típica en modo desarrollo
 
 ```bash
-./run.sh build        # solo la primera vez
-./run.sh smoke        # solo si no existe
+./run.sh build        # solo la primera vez o tras cambiar Dockerfile/requirements.txt
 ./run.sh train-dev
 ./run.sh run-dev
-./run.sh eval-dev     # opcional: reevaluar sin correr inferencia
+./run.sh eval-dev     # opcional si el dataset de ejecución tiene etiquetas
 ```
 
 ## 3) Validación completa

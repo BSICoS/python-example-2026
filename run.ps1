@@ -221,22 +221,24 @@ function Eval-Smoke {
 }
 
 # ======================
-# MODO DESARROLLO (SIN REBUILD)
+# MODO DESARROLLO (SIN REBUILD, DATASETS COMPLETOS)
 # ======================
 
 function Train-Dev {
 
     $CODE_PATH = Get-AbsolutePath "."
-    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
-    $MODEL_SMOKE = Join-Path $CODE_PATH $MODEL_SMOKE_REL
+    $FULL_DATA = Get-AbsolutePath $TRAIN_DATA_REL
+    $MODEL_FULL = Join-Path $CODE_PATH $MODEL_FULL_REL
+    $FEATURE_CACHE = Join-Path $CODE_PATH $FEATURE_CACHE_REL
 
-    Ensure-Directory $MODEL_SMOKE
+    Ensure-Directory $MODEL_FULL
+    Ensure-Directory $FEATURE_CACHE
 
     $GPU_ARGS = Get-DockerGpuArgs
     docker run --rm $GPU_ARGS `
         -v "${CODE_PATH}:/challenge" `
-        -v "${SMOKE_DATA}:/challenge/training_data:ro" `
-        -v "${MODEL_SMOKE}:/challenge/model" `
+        -v "${FULL_DATA}:/challenge/training_data:ro" `
+        -v "${MODEL_FULL}:/challenge/model" `
         $IMAGE_NAME `
         python train_model.py -d training_data -m model -v
 }
@@ -244,32 +246,41 @@ function Train-Dev {
 function Run-Dev {
 
     $CODE_PATH = Get-AbsolutePath "."
-    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
+    $RUN_DATA = Get-AbsolutePath $RUN_DATA_REL
     $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $MODEL_SMOKE = Get-AbsolutePath $MODEL_SMOKE_REL
-    $OUT_SMOKE = Join-Path $CODE_PATH $OUT_SMOKE_REL
+    $MODEL_FULL = Get-AbsolutePath $MODEL_FULL_REL
+    $OUT_FULL = Join-Path $CODE_PATH $OUT_FULL_REL
+    $FEATURE_CACHE = Join-Path $CODE_PATH $FEATURE_CACHE_REL
 
-    Ensure-Directory $OUT_SMOKE
+    Ensure-Directory $OUT_FULL
+    Ensure-Directory $FEATURE_CACHE
 
     $GPU_ARGS = Get-DockerGpuArgs
     docker run --rm $GPU_ARGS `
         -v "${CODE_PATH}:/challenge" `
-        -v "${SMOKE_DATA}:/challenge/holdout_data:ro" `
-        -v "${MODEL_SMOKE}:/challenge/model:ro" `
-        -v "${OUT_SMOKE}:/challenge/holdout_outputs" `
+        -v "${RUN_DATA}:/challenge/holdout_data:ro" `
+        -v "${MODEL_FULL}:/challenge/model:ro" `
         $IMAGE_NAME `
-        python run_model.py -d holdout_data -m model -o holdout_outputs -v
+        python run_model.py -d holdout_data -m model -o outputs -v
 
-    Invoke-EvaluationDev $CODE_PATH $SMOKE_DATA "/challenge/holdout_outputs" $PREVALENCE_DATA "development smoke"
+    if (Test-DatasetHasLabels $RUN_DATA) {
+        Invoke-EvaluationDev $CODE_PATH $RUN_DATA "/challenge/outputs" $PREVALENCE_DATA "development run-dataset"
+    } else {
+        Write-Host "Skipping evaluation for run dataset (labels not present in $RUN_DATA_REL/$DEMOGRAPHICS_FILE)."
+    }
 }
 
 function Eval-Dev {
 
     $CODE_PATH = Get-AbsolutePath "."
-    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
+    $RUN_DATA = Get-AbsolutePath $RUN_DATA_REL
     $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
 
-    Invoke-EvaluationDev $CODE_PATH $SMOKE_DATA "/challenge/holdout_outputs" $PREVALENCE_DATA "development smoke"
+    if (Test-DatasetHasLabels $RUN_DATA) {
+        Invoke-EvaluationDev $CODE_PATH $RUN_DATA "/challenge/outputs" $PREVALENCE_DATA "development run-dataset"
+    } else {
+        Write-Host "Skipping evaluation for run dataset (labels not present in $RUN_DATA_REL/$DEMOGRAPHICS_FILE)."
+    }
 }
 
 function Clean-All {

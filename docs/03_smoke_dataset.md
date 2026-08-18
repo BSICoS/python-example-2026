@@ -29,7 +29,7 @@ Los comandos de ejecución están centralizados en `docs/04_run_script.md`.
 
 ## Relación con el flujo principal
 
-El dataset smoke se crea al inicio del ciclo de desarrollo y se usa junto con `train-dev` y `run-dev`.
+El dataset smoke se usa para comprobaciones rápidas con `train-smoke` y `run-smoke`.
 El orden detallado de ejecución está en `docs/04_run_script.md`.
 
 ## ¿Cuándo usar smoke?
