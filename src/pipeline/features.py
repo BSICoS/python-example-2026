@@ -59,11 +59,10 @@ FEATURE_NAMES = (
 )
 
 SEGMENT_AGGREGATION_FUNCTIONS = {
-    'Max': lambda values: float(np.percentile(values, 95)),
-    'Min': lambda values: float(np.percentile(values, 5)),
-    'Mean': lambda values: float(np.mean(values)),
+    'Max': lambda values: float(np.percentile(values, 90)),
+    'Min': lambda values: float(np.percentile(values, 10)),
     'Median': lambda values: float(np.median(values)),
-    'Std': lambda values: float(np.std(values)),
+    'IQR': lambda values: float(np.percentile(values, 75) - np.percentile(values, 25)),
 }
 
 def _get_feature_cache_root(data_folder):
@@ -429,8 +428,6 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
         patient_id,
         session_id,
     )
-    print(f"Extracting features for patient {patient_id}, session {session_id} from file: {physiological_data_file}")
-    
     total_physio_names_len = sum(len(FEATURE_NAME_GROUPS[g]) for g in ('resp', 'eeg', 'ecg'))
 
     if os.path.exists(physiological_data_file):

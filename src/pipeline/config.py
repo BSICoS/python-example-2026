@@ -8,12 +8,7 @@ from src.resp_processing import RESP_FEATURE_LENGTH
 SCRIPT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 DEFAULT_CSV_PATH = os.path.join(SCRIPT_DIR, 'channel_table.csv')
 FEATURE_CACHE_FOLDER_NAME = '.feature_cache'
-INCLUDE_SUBJECT_FEATURE_MEAN = False
-SEGMENT_AGGREGATION_NAMES = (
-    ('Max', 'Min', 'Mean', 'Median', 'Std')
-    if INCLUDE_SUBJECT_FEATURE_MEAN
-    else ('Max', 'Min', 'Median', 'Std')
-)
+SEGMENT_AGGREGATION_NAMES = ('Max', 'Min', 'Median', 'IQR')
 FEATURE_CORRELATION_THRESHOLD = 0.8
 MAX_TRAIN_WORKERS = max(1, min(4, os.cpu_count() or 1))
 USE_SITE_GROUPED_CV = False
