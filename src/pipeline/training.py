@@ -16,10 +16,10 @@ from .config import (
     CV_SEARCH_ITERATIONS,
     CV_SEARCH_SCORING,
     DEFAULT_CV_HYPERPARAMETERS,
+    FINAL_SEARCH_CV_STRATEGY,
     MAX_TRAIN_WORKERS,
     OPTIMIZE_HYPERPARAMETER_SEARCH,
     RANDOM_CV_N_SPLITS,
-    USE_SITE_GROUPED_CV,
 )
 from .cross_validation import CrossValidationConfig, EnsembleCrossValidator, normalize_site_group
 from .features import get_feature_group_indices, get_feature_names, get_or_create_record_feature_vector
@@ -299,6 +299,31 @@ def _get_route_categorical_indices(raw_indices, categorical_indices):
         position for position, raw_index in enumerate(raw_indices)
         if int(raw_index) in categorical_set
     ]
+
+
+def _get_ecg_eeg_search_data(
+    feature_matrix,
+    labels,
+    feature_indices,
+    modality_presence_indices,
+    categorical_indices=None,
+    site_groups=None,
+):
+    raw_indices = _get_combined_model_indices(feature_indices)['ecg_eeg']
+    eligible_mask = _get_route_presence_mask(
+        feature_matrix,
+        'ecg_eeg',
+        modality_presence_indices,
+    )
+    return {
+        'features': feature_matrix[eligible_mask][:, raw_indices],
+        'labels': labels[eligible_mask],
+        'categorical_indices': _get_route_categorical_indices(raw_indices, categorical_indices),
+        'site_groups': None if site_groups is None else site_groups[eligible_mask],
+        'route_name': 'ecg_eeg',
+        'raw_indices': raw_indices,
+        'age_feature_index': int(np.flatnonzero(raw_indices == 0)[0]),
+    }
 
 
 def _fit_route_model(route_features, route_labels, raw_indices, categorical_indices, final_params):
@@ -629,7 +654,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         for metadata_row in metadata_rows
     ])
     cv_config = CrossValidationConfig(
-        use_site_grouped_cv=USE_SITE_GROUPED_CV,
+        final_search_cv_strategy=FINAL_SEARCH_CV_STRATEGY,
         optimize_hyperparameter_search=OPTIMIZE_HYPERPARAMETER_SEARCH,
         outer_random_splits=RANDOM_CV_N_SPLITS,
         random_state=CV_RANDOM_STATE,
@@ -641,7 +666,6 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     print(f"  Categorical feature indices: {categorical_indices} "
           f"({[feature_names[i] for i in categorical_indices]})")
     print(f"  Hospital CV groups: {sorted(np.unique(site_groups).tolist())}")
-    print(f"  CV strategy: {'grouped by hospital' if cv_config.use_site_grouped_cv else 'random stratified folds'}")
     print(f"  Hyperparameter search: {'enabled' if cv_config.optimize_hyperparameter_search else 'disabled'}")
     print(f"  Hyperparameter search scoring: {cv_config.search_scoring}")
     
@@ -659,14 +683,26 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         select_model_names=select_ensemble_model_names,
         predict_model_probabilities=predict_route_model_probabilities,
         fit_ensemble_handles_preprocessing=True,
+        select_search_data=_get_ecg_eeg_search_data,
         search_age_feature_index=raw_age_feature_index,
         search_age_feature_scale=1.0,
         search_age_feature_offset=0.0,
     )
 
-    # --- Step 1: Leakage-free nested CV for evaluation and final model selection ---
-    print("Running nested CV with fold-specific preprocessing...")
-    cv_result = cv_runner.run(
+    print("\n" + "=" * 60)
+    print("RANDOM STRATIFIED NESTED CV")
+    print("=" * 60)
+    random_cv_result = cv_runner.evaluate_random_nested_cv(
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices=modality_presence_indices,
+        categorical_indices=categorical_indices if categorical_indices else None,
+    )
+    print("\n" + "=" * 60)
+    print("LEAVE-ONE-HOSPITAL-OUT NESTED CV")
+    print("=" * 60)
+    hospital_cv_result = cv_runner.evaluate_grouped_nested_cv(
         features,
         labels,
         feature_indices,
@@ -674,9 +710,22 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         categorical_indices=categorical_indices if categorical_indices else None,
         site_groups=site_groups,
     )
-    threshold = cv_result.threshold
-    final_params = cv_result.final_params
-    cv_metrics = cv_result.metrics
+    print("\n" + "=" * 60)
+    print("FINAL HYPERPARAMETER SEARCH")
+    print("=" * 60)
+    final_params, final_search_score = cv_runner.select_final_params(
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices=categorical_indices if categorical_indices else None,
+        site_groups=site_groups,
+    )
+    print(f"  Best final parameters: {final_params}")
+    print(f"  Final CV search score: {final_search_score:.3f}")
+    threshold = hospital_cv_result.threshold
+    if hospital_cv_result.metrics.get('skipped'):
+        threshold = random_cv_result.threshold
 
     # This preprocessor is retained for feature exports only. Each deployed route
     # fits and stores its own preprocessor below.
@@ -725,7 +774,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     combined_indices = _get_combined_model_indices(feature_indices)
 
 
-    # --- Step 2: Fit each model on patients with its required signal modalities ---
+    print("\n" + "=" * 60)
+    print("FINAL FIT")
+    print("=" * 60)
     print("Fitting final ensemble on all training data...")
     models = _fit_ensemble(
         features,
@@ -785,6 +836,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         'models': models,
         'preprocessor': preprocessor,
         'feature_exports': feature_exports,
-        'cv_metrics': cv_metrics,
+        'random_cv_metrics': random_cv_result.metrics,
+        'hospital_cv_metrics': hospital_cv_result.metrics,
+        'final_params': final_params,
+        'final_search_score': final_search_score,
         'training_metrics': training_metrics,
     }

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
-from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator
+from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator, FoldSplit
 
 from src.pipeline.metrics import (
     AgeConditionedAUROCScorer,
@@ -17,6 +17,7 @@ from src.pipeline.metrics import (
 )
 
 from src.pipeline.preprocessing import build_preprocessor
+from src.pipeline.training import _get_ecg_eeg_search_data
 
 def _read_config_literal(name):
     config_path = Path(__file__).parents[1] / 'src' / 'pipeline' / 'config.py'
@@ -68,6 +69,7 @@ class CrossValidationScoringTests(unittest.TestCase):
             outer_random_splits=2,
             search_iterations=1,
             search_scoring='age_conditioned_auroc',
+            final_search_cv_strategy='random_stratified',
             optimize_hyperparameter_search=True,
         )
         runner = EnsembleCrossValidator(
@@ -88,7 +90,12 @@ class CrossValidationScoringTests(unittest.TestCase):
         with patch('src.pipeline.cross_validation.RandomizedSearchCV') as search_class:
             search_class.return_value.best_params_ = {'model__max_depth': 3}
             search_class.return_value.best_score_ = 0.75
-            params, score = runner._select_final_params(features, labels)
+            params, score = runner.select_final_params(
+                features,
+                labels,
+                {'all': np.array([0, 1], dtype=np.int32)},
+                {'all': np.array([0, 1], dtype=np.int32)},
+            )
 
         estimator = search_class.call_args.kwargs['estimator']
         self.assertIsInstance(estimator, Pipeline)
@@ -101,7 +108,7 @@ class CrossValidationScoringTests(unittest.TestCase):
         self.assertEqual(scorer.age_feature_scale, 10.0)
         search_class.return_value.fit.assert_called_once()
 
-    def test_final_search_is_independent_from_oof_evaluation(self):
+    def test_final_search_is_independent_from_random_oof_evaluation(self):
         features = np.arange(16, dtype=np.float32).reshape(8, 2)
         labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
         feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
@@ -120,7 +127,7 @@ class CrossValidationScoringTests(unittest.TestCase):
             runner = EnsembleCrossValidator(
                 config=CrossValidationConfig(
                     search_scoring='roc_auc',
-                    use_site_grouped_cv=False,
+                    final_search_cv_strategy='random_stratified',
                     optimize_hyperparameter_search=True,
                     outer_random_splits=2,
                 ),
@@ -137,20 +144,28 @@ class CrossValidationScoringTests(unittest.TestCase):
             )
             with patch.object(runner, '_search_hyperparams', side_effect=record_search):
                 with redirect_stdout(io.StringIO()):
-                    result = runner.run(
+                    result = runner.evaluate_random_nested_cv(
                         features,
                         labels,
                         feature_indices,
                         modality_presence_indices=feature_indices,
                     )
-            return result, search_calls
+                    selected_params, selected_score = runner.select_final_params(
+                        features,
+                        labels,
+                        feature_indices,
+                        feature_indices,
+                    )
+            return result, selected_params, selected_score, search_calls
 
-        first_result, first_search_calls = run_with_final_params({'max_depth': 3})
-        second_result, second_search_calls = run_with_final_params({'max_depth': 9})
+        first_result, first_params, first_score, first_search_calls = run_with_final_params({'max_depth': 3})
+        second_result, second_params, _, second_search_calls = run_with_final_params({'max_depth': 9})
 
-        self.assertEqual(first_result.final_params, {'max_depth': 3})
-        self.assertEqual(second_result.final_params, {'max_depth': 9})
-        self.assertEqual(first_result.final_search_score, 0.99)
+        self.assertIsNone(first_result.final_params)
+        self.assertIsNone(first_result.final_search_score)
+        self.assertEqual(first_params, {'max_depth': 3})
+        self.assertEqual(second_params, {'max_depth': 9})
+        self.assertEqual(first_score, 0.99)
         self.assertEqual(first_result.metrics['selected_params_per_fold'][0]['params'], {'max_depth': 1})
         self.assertEqual(first_result.metrics['selected_params_per_fold'][1]['params'], {'max_depth': 2})
         self.assertEqual(first_result.metrics['oof_calibrated_metrics'], second_result.metrics['oof_calibrated_metrics'])
@@ -158,7 +173,128 @@ class CrossValidationScoringTests(unittest.TestCase):
         self.assertTrue(np.array_equal(first_search_calls[-1][0], features))
         self.assertTrue(np.array_equal(first_search_calls[-1][1], labels))
         self.assertTrue(np.array_equal(second_search_calls[-1][0], features))
+        self.assertEqual(len(first_search_calls), 3)
+        self.assertEqual(len(second_search_calls), 3)
         self.assertFalse(hasattr(EnsembleCrossValidator, '_consensus_params'))
+
+    def test_outer_and_final_search_use_ecg_eeg_data(self):
+        features = np.array([
+            [20.0, 0.0, 10.0, 20.0, 30.0],
+            [21.0, 1.0, np.nan, 21.0, 31.0],
+            [22.0, 0.0, 12.0, np.nan, 32.0],
+            [23.0, 1.0, 13.0, 23.0, 33.0],
+        ], dtype=np.float32)
+        labels = np.array([0, 1, 0, 1], dtype=np.int32)
+        feature_indices = {
+            'demographics': np.array([0, 1], dtype=np.int32),
+            'resp': np.array([2], dtype=np.int32),
+            'eeg': np.array([3], dtype=np.int32),
+            'ecg': np.array([4], dtype=np.int32),
+        }
+        modality_presence_indices = {
+            name: feature_indices[name]
+            for name in ('resp', 'eeg', 'ecg')
+        }
+        search_calls = []
+        runner = EnsembleCrossValidator(
+            config=CrossValidationConfig(
+                search_scoring='roc_auc',
+                optimize_hyperparameter_search=True,
+            ),
+            param_dist={'max_depth': [3]},
+            default_threshold=0.5,
+            build_preprocessor=build_preprocessor,
+            build_search_model=lambda fold_labels: object(),
+            fit_ensemble=lambda *args, **kwargs: {},
+            predict_probabilities=lambda *args, **kwargs: None,
+            select_search_data=_get_ecg_eeg_search_data,
+            search_age_feature_index=0,
+        )
+
+        def record_search(search_features, search_labels, **kwargs):
+            search_calls.append((
+                np.asarray(search_features).copy(),
+                np.asarray(search_labels).copy(),
+                kwargs,
+            ))
+            return {'max_depth': 3}, 0.75
+
+        with patch.object(runner, '_search_hyperparams', side_effect=record_search):
+            with redirect_stdout(io.StringIO()):
+                selected_params = runner._select_fold_params(
+                    [FoldSplit(1, np.array([0, 1, 2]), np.array([3]), 'test')],
+                    features,
+                    labels,
+                    feature_indices,
+                    modality_presence_indices,
+                    categorical_indices=[1],
+                    site_groups=np.array(['A', 'B', 'C', 'D']),
+                )
+                final_params, _ = runner._select_final_params(
+                    features,
+                    labels,
+                    feature_indices,
+                    modality_presence_indices,
+                    categorical_indices=[1],
+                    site_groups=np.array(['A', 'B', 'C', 'D']),
+                )
+
+        self.assertEqual(selected_params[0]['params'], {'max_depth': 3})
+        self.assertEqual(final_params, {'max_depth': 3})
+        self.assertEqual(len(search_calls), 2)
+        self.assertTrue(np.array_equal(search_calls[0][0], features[[0, 1]][:, [0, 1, 3, 4]]))
+        self.assertTrue(np.array_equal(search_calls[0][1], labels[[0, 1]]))
+        self.assertTrue(np.array_equal(search_calls[1][0], features[[0, 1, 3]][:, [0, 1, 3, 4]]))
+        self.assertTrue(np.array_equal(search_calls[1][1], labels[[0, 1, 3]]))
+        self.assertEqual(search_calls[0][2]['categorical_indices'], [1])
+        self.assertEqual(search_calls[1][2]['categorical_indices'], [1])
+        self.assertTrue(np.array_equal(search_calls[0][2]['site_groups'], ['A', 'B']))
+        self.assertTrue(np.array_equal(search_calls[1][2]['site_groups'], ['A', 'B', 'D']))
+        self.assertEqual(search_calls[0][2]['cv_strategy'], 'random_stratified')
+        self.assertEqual(search_calls[1][2]['cv_strategy'], 'grouped_by_hospital')
+
+    def test_grouped_evaluation_runs_fold_searches_without_final_search(self):
+        features = np.arange(12, dtype=np.float32).reshape(6, 2)
+        labels = np.array([0, 1, 0, 1, 0, 1], dtype=np.int32)
+        site_groups = np.array(['A', 'A', 'B', 'B', 'C', 'C'])
+        feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
+        search_calls = []
+        runner = EnsembleCrossValidator(
+            config=CrossValidationConfig(
+                search_scoring='roc_auc',
+                optimize_hyperparameter_search=True,
+            ),
+            param_dist={'max_depth': [3]},
+            default_threshold=0.5,
+            build_preprocessor=lambda *args: None,
+            build_search_model=lambda fold_labels: object(),
+            fit_ensemble=lambda *args, **kwargs: {},
+            predict_probabilities=lambda bundle, values: np.full(len(values), 0.5),
+        )
+
+        def record_search(search_features, search_labels, **kwargs):
+            search_calls.append(kwargs)
+            return {'max_depth': 3}, 0.75
+
+        with patch.object(runner, '_search_hyperparams', side_effect=record_search):
+            with redirect_stdout(io.StringIO()):
+                result = runner.evaluate_grouped_nested_cv(
+                    features,
+                    labels,
+                    feature_indices,
+                    modality_presence_indices=feature_indices,
+                    site_groups=site_groups,
+                )
+
+        self.assertEqual(len(search_calls), 3)
+        self.assertTrue(all(
+            call['cv_strategy'] == 'grouped_by_hospital'
+            for call in search_calls
+        ))
+        self.assertIsNone(result.final_params)
+        self.assertIsNone(result.final_search_score)
+        self.assertEqual(result.metrics['cv_strategy'], 'grouped_by_site')
+        self.assertEqual(result.metrics['oof_calibrated_metrics']['threshold'], result.threshold)
 
     def test_standard_auroc_selector_keeps_sklearn_string(self):
         self.assertEqual(resolve_search_scoring('roc_auc'), 'roc_auc')

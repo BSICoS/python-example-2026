@@ -8,7 +8,11 @@ from sklearn.base import clone
 
 from src.pipeline.cross_validation import CrossValidationConfig, EnsembleCrossValidator, FoldSplit
 from src.pipeline.preprocessing import CorrelationAwarePreprocessor
-from src.pipeline.training import _fit_ensemble, _select_ensemble_model_name
+from src.pipeline.training import (
+    _fit_ensemble,
+    _get_ecg_eeg_search_data,
+    _select_ensemble_model_name,
+)
 
 
 class _RecordingPreprocessor(CorrelationAwarePreprocessor):
@@ -73,7 +77,6 @@ class PreprocessingLeakageTests(unittest.TestCase):
         runner = EnsembleCrossValidator(
             config=CrossValidationConfig(
                 search_scoring='roc_auc',
-                use_site_grouped_cv=False,
                 optimize_hyperparameter_search=False,
                 outer_random_splits=2,
             ),
@@ -88,7 +91,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
 
         output = io.StringIO()
         with redirect_stdout(output):
-            result = runner.run(
+            result = runner.evaluate_random_nested_cv(
                 features,
                 labels,
                 feature_indices,
@@ -161,7 +164,6 @@ class PreprocessingLeakageTests(unittest.TestCase):
         runner = EnsembleCrossValidator(
             config=CrossValidationConfig(
                 search_scoring='roc_auc',
-                use_site_grouped_cv=False,
                 optimize_hyperparameter_search=False,
                 outer_random_splits=2,
             ),
@@ -179,7 +181,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
         )
 
         with redirect_stdout(io.StringIO()):
-            result = runner.run(
+            result = runner.evaluate_random_nested_cv(
                 features,
                 labels,
                 feature_indices,
@@ -271,6 +273,41 @@ class PreprocessingLeakageTests(unittest.TestCase):
             ),
             'ecg',
         )
+
+    def test_ecg_eeg_search_data_excludes_ineligible_samples_and_resp_features(self):
+        features = np.array([
+            [20.0, 0.0, 10.0, 20.0, 30.0],
+            [21.0, 1.0, np.nan, 21.0, 31.0],
+            [22.0, 0.0, 12.0, np.nan, 32.0],
+            [23.0, 1.0, 13.0, 23.0, 33.0],
+        ], dtype=np.float32)
+        labels = np.array([0, 1, 0, 1], dtype=np.int32)
+        feature_indices = {
+            'demographics': np.array([0, 1], dtype=np.int32),
+            'resp': np.array([2], dtype=np.int32),
+            'eeg': np.array([3], dtype=np.int32),
+            'ecg': np.array([4], dtype=np.int32),
+        }
+
+        search_data = _get_ecg_eeg_search_data(
+            features,
+            labels,
+            feature_indices,
+            modality_presence_indices={
+                'resp': feature_indices['resp'],
+                'eeg': feature_indices['eeg'],
+                'ecg': feature_indices['ecg'],
+            },
+            categorical_indices=[1],
+            site_groups=np.array(['A', 'B', 'C', 'D']),
+        )
+
+        self.assertEqual(search_data['route_name'], 'ecg_eeg')
+        self.assertTrue(np.array_equal(search_data['raw_indices'], [0, 1, 3, 4]))
+        self.assertTrue(np.array_equal(search_data['features'], features[[0, 1, 3]][:, [0, 1, 3, 4]]))
+        self.assertTrue(np.array_equal(search_data['labels'], labels[[0, 1, 3]]))
+        self.assertEqual(search_data['categorical_indices'], [1])
+        self.assertTrue(np.array_equal(search_data['site_groups'], ['A', 'B', 'D']))
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -17,7 +17,7 @@ def normalize_site_group(site_id):
 @dataclass(frozen=True)
 class CrossValidationConfig:
     search_scoring: str
-    use_site_grouped_cv: bool = True
+    final_search_cv_strategy: str = 'grouped_by_hospital'
     optimize_hyperparameter_search: bool = False
     outer_random_splits: int = 5
     random_state: int = 42
@@ -54,6 +54,7 @@ class EnsembleCrossValidator:
         select_model_names: Optional[Callable[..., Any]] = None,
         predict_model_probabilities: Optional[Callable[..., Any]] = None,
         fit_ensemble_handles_preprocessing: bool = False,
+        select_search_data: Optional[Callable[..., dict[str, Any]]] = None,
         search_age_feature_index: Optional[int] = None,
         search_age_feature_scale: float = 1.0,
         search_age_feature_offset: float = 0.0,
@@ -68,11 +69,12 @@ class EnsembleCrossValidator:
         self.select_model_names = select_model_names
         self.predict_model_probabilities = predict_model_probabilities
         self.fit_ensemble_handles_preprocessing = fit_ensemble_handles_preprocessing
+        self.select_search_data = select_search_data
         self.search_age_feature_index = search_age_feature_index
         self.search_age_feature_scale = float(search_age_feature_scale)
         self.search_age_feature_offset = float(search_age_feature_offset)
 
-    def run(
+    def evaluate_random_nested_cv(
         self,
         features,
         labels,
@@ -82,19 +84,27 @@ class EnsembleCrossValidator:
         site_groups=None,
     ):
         labels = np.asarray(labels, dtype=np.int32)
-        if self.config.use_site_grouped_cv:
-            return self._run_grouped_cv(
-                features,
-                labels,
-                site_groups,
-                feature_indices,
-                modality_presence_indices,
-                categorical_indices=categorical_indices,
-            )
-
         return self._run_random_cv(
             features,
             labels,
+            feature_indices,
+            modality_presence_indices,
+            categorical_indices=categorical_indices,
+        )
+
+    def evaluate_grouped_nested_cv(
+        self,
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices=None,
+        site_groups=None,
+    ):
+        return self._run_grouped_cv(
+            features,
+            np.asarray(labels, dtype=np.int32),
+            site_groups,
             feature_indices,
             modality_presence_indices,
             categorical_indices=categorical_indices,
@@ -154,9 +164,11 @@ class EnsembleCrossValidator:
             features,
             labels,
             feature_indices,
+            modality_presence_indices,
             categorical_indices=categorical_indices,
             site_groups=site_groups,
             label_prefix='held-out hospital',
+            search_cv_strategy='grouped_by_hospital',
         )
         fold_metrics, oof_probabilities, routed_model_oof = self._evaluate_with_fold_params(
             split_plan,
@@ -183,13 +195,7 @@ class EnsembleCrossValidator:
                 'site_groups': unique_sites.tolist(),
             },
         )
-        return self._complete_final_model_selection(
-            result,
-            features,
-            labels,
-            categorical_indices=categorical_indices,
-            site_groups=site_groups,
-        )
+        return result
 
     def _run_random_cv(
         self,
@@ -227,9 +233,11 @@ class EnsembleCrossValidator:
             features,
             labels,
             feature_indices,
+            modality_presence_indices,
             categorical_indices=categorical_indices,
             site_groups=None,
             label_prefix='random split',
+            search_cv_strategy='random_stratified',
         )
         fold_metrics, oof_probabilities, routed_model_oof = self._evaluate_with_fold_params(
             split_plan,
@@ -254,12 +262,7 @@ class EnsembleCrossValidator:
                 'n_splits': int(n_splits),
             },
         )
-        return self._complete_final_model_selection(
-            result,
-            features,
-            labels,
-            categorical_indices=categorical_indices,
-        )
+        return result
 
     def _select_fold_params(
         self,
@@ -267,9 +270,11 @@ class EnsembleCrossValidator:
         features,
         labels,
         feature_indices,
+        modality_presence_indices,
         categorical_indices=None,
         site_groups=None,
         label_prefix='fold',
+        search_cv_strategy='random_stratified',
     ):
         if not self.config.optimize_hyperparameter_search:
             fixed_params = dict(self.config.fixed_hyperparameters)
@@ -288,16 +293,24 @@ class EnsembleCrossValidator:
 
         for split in split_plan:
             print(f"  Search fold {split.fold_index}/{len(split_plan)} - {label_prefix} {split.label}")
-            X_train = features[split.train_idx]
-            y_train = labels[split.train_idx]
-            search_site_groups = None if site_groups is None else site_groups[split.train_idx]
+            search_data = self._get_search_data(
+                features[split.train_idx],
+                labels[split.train_idx],
+                feature_indices,
+                modality_presence_indices,
+                categorical_indices=categorical_indices,
+                site_groups=None if site_groups is None else site_groups[split.train_idx],
+            )
+            self._print_search_data_summary(search_data)
 
 
             fold_best_params, fold_best_score = self._search_hyperparams(
-                X_train,
-                y_train,
-                site_groups=search_site_groups,
-                categorical_indices=categorical_indices,
+                search_data['features'],
+                search_data['labels'],
+                site_groups=search_data['site_groups'],
+                categorical_indices=search_data['categorical_indices'],
+                age_feature_index=search_data['age_feature_index'],
+                cv_strategy=search_cv_strategy,
             )
             print(f"    Best params: {fold_best_params} (inner-CV score: {fold_best_score:.3f})")
             selected_params_per_fold.append({
@@ -509,55 +522,87 @@ class EnsembleCrossValidator:
             metrics=metrics,
         )
 
-    def _complete_final_model_selection(
+    def select_final_params(
         self,
-        result,
         features,
         labels,
+        feature_indices,
+        modality_presence_indices,
         categorical_indices=None,
         site_groups=None,
     ):
-        oof_score = result.metrics['oof_calibrated_metrics']['age_conditioned_auroc']
-        print('\nNested CV complete:')
-        print(f"  OOF Age-conditioned AUROC: {self._format_metric_value(oof_score)}")
-        print('\nOuter-fold hyperparameter selections:')
-        for selection in result.metrics['selected_params_per_fold']:
-            score = selection.get('score')
-            score_text = '' if score is None else f" score={self._format_metric_value(score)}"
-            print(f"  Fold {selection['fold']}: {selection['params']}{score_text}")
-
-        print('\nRunning final hyperparameter search on all training data...')
-        final_params, final_search_score = self._select_final_params(
+        print(f"  CV strategy: {self.config.final_search_cv_strategy.replace('_', ' ')}")
+        return self._select_final_params(
             features,
             labels,
+            feature_indices,
+            modality_presence_indices,
             categorical_indices=categorical_indices,
             site_groups=site_groups,
         )
-        print(f"  Best final parameters: {final_params}")
-        print(f"  Final CV search score: {self._format_metric_value(final_search_score)}")
 
-        metrics = dict(result.metrics)
-        metrics.update({
-            'final_params': dict(final_params),
-            'final_search_score': final_search_score,
-        })
-        return replace(
-            result,
-            final_params=dict(final_params),
-            final_search_score=final_search_score,
-            metrics=metrics,
-        )
-
-    def _select_final_params(self, features, labels, categorical_indices=None, site_groups=None):
+    def _select_final_params(
+        self,
+        features,
+        labels,
+        feature_indices=None,
+        modality_presence_indices=None,
+        categorical_indices=None,
+        site_groups=None,
+    ):
         if not self.config.optimize_hyperparameter_search:
             return dict(self.config.fixed_hyperparameters), float('nan')
 
-        return self._search_hyperparams(
+        search_data = self._get_search_data(
             features,
             labels,
-            site_groups=site_groups,
+            feature_indices,
+            modality_presence_indices,
             categorical_indices=categorical_indices,
+            site_groups=site_groups,
         )
+        self._print_search_data_summary(search_data)
+        return self._search_hyperparams(
+            search_data['features'],
+            search_data['labels'],
+            site_groups=search_data['site_groups'],
+            categorical_indices=search_data['categorical_indices'],
+            age_feature_index=search_data['age_feature_index'],
+            cv_strategy=self.config.final_search_cv_strategy,
+        )
+
+    def _get_search_data(
+        self,
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices=None,
+        site_groups=None,
+    ):
+        if self.select_search_data is not None:
+            return self.select_search_data(
+                features,
+                labels,
+                feature_indices,
+                modality_presence_indices,
+                categorical_indices=categorical_indices,
+                site_groups=site_groups,
+            )
+        return {
+            'features': features,
+            'labels': labels,
+            'categorical_indices': categorical_indices,
+            'site_groups': site_groups,
+            'route_name': 'all',
+            'raw_indices': np.arange(features.shape[1], dtype=np.int32),
+            'age_feature_index': self.search_age_feature_index,
+        }
+
+    def _print_search_data_summary(self, search_data):
+        print(f"    Hyperparameter search route: {search_data['route_name']}")
+        print(f"    Search samples: {len(search_data['labels'])}")
+        print(f"    Search features: {len(search_data['raw_indices'])}")
 
     def _get_model_feature_indices(self, model_name, feature_indices):
         if model_name == 'all':
@@ -608,14 +653,29 @@ class EnsembleCrossValidator:
 
         return metrics_by_model
 
-    def _search_hyperparams(self, X_train, y_train, site_groups=None, categorical_indices=None):
-        inner_cv, fit_kwargs = self._build_inner_cv(y_train, site_groups)
+    def _search_hyperparams(
+        self,
+        X_train,
+        y_train,
+        site_groups=None,
+        categorical_indices=None,
+        age_feature_index=None,
+        cv_strategy='random_stratified',
+    ):
+        inner_cv, fit_kwargs = self._build_inner_cv(
+            y_train,
+            site_groups,
+            cv_strategy,
+        )
         if inner_cv is None:
             return {}, float('nan')
 
         scoring = resolve_search_scoring(
             self.config.search_scoring,
-            age_feature_index=self.search_age_feature_index,
+            age_feature_index=(
+                self.search_age_feature_index
+                if age_feature_index is None else age_feature_index
+            ),
             age_feature_scale=self.search_age_feature_scale,
             age_feature_offset=self.search_age_feature_offset,
         )
@@ -651,15 +711,21 @@ class EnsembleCrossValidator:
             float(search.best_score_),
         )
 
-    def _build_inner_cv(self, y_train, site_groups=None):
+    def _build_inner_cv(self, y_train, site_groups=None, cv_strategy='random_stratified'):
         fit_kwargs = {}
 
-        if self.config.use_site_grouped_cv and site_groups is not None:
+        if cv_strategy == 'grouped_by_hospital' and site_groups is not None:
             site_groups = np.asarray(site_groups)
             unique_groups = np.unique(site_groups)
             if unique_groups.size >= 2:
                 fit_kwargs['groups'] = site_groups
                 return LeaveOneGroupOut(), fit_kwargs
+
+        if cv_strategy == 'grouped_by_hospital':
+            return None, fit_kwargs
+
+        if cv_strategy != 'random_stratified':
+            raise ValueError(f'Unsupported search CV strategy: {cv_strategy}')
 
         inner_cv, _ = self._build_stratified_splitter(y_train, self.config.outer_random_splits)
         return inner_cv, fit_kwargs
