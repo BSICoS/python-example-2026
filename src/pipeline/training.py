@@ -23,7 +23,6 @@ from .config import (
 )
 from .cross_validation import CrossValidationConfig, EnsembleCrossValidator, normalize_site_group
 from .features import (
-    CHEAP_FEATURE_NAMES,
     get_feature_group_indices,
     get_feature_names,
     get_or_create_record_feature_vector,
@@ -34,6 +33,10 @@ from .preprocessing import build_preprocessor, get_processed_feature_names, rema
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
 ENSEMBLE_MODALITIES = ('eeg', 'ecg')
+COMPETITIVE_CAISR_FEATURE_NAMES = (
+    'CAISR_REM_fraction',
+    'CAISR_limb_movements_per_hour',
+)
 
 # Context needed to evaluate the age-conditioned metric on scaled model inputs.
 AGE_FEATURE_INDEX = 0
@@ -262,8 +265,8 @@ def _get_combined_model_indices(feature_indices):
     """
     demo_indices = np.asarray(feature_indices.get('demographics', []), dtype=np.int32)
     feature_names = get_feature_names()
-    cheap_indices = np.asarray([
-        feature_names.index(name) for name in CHEAP_FEATURE_NAMES
+    competitive_caisr_indices = np.asarray([
+        feature_names.index(name) for name in COMPETITIVE_CAISR_FEATURE_NAMES
     ], dtype=np.int32)
     eeg_indices = np.asarray(feature_indices.get('eeg', []), dtype=np.int32)
     competitive_eeg_indices = np.asarray([
@@ -280,9 +283,9 @@ def _get_combined_model_indices(feature_indices):
         return np.array(sorted(list(combined)), dtype=np.int32)
 
     return {
-        'ecg': _combine(['ecg', cheap_indices]),
-        'eeg': _combine([competitive_eeg_indices, cheap_indices]),
-        'ecg_eeg': _combine(['ecg', competitive_eeg_indices, cheap_indices]),
+        'ecg': _combine(['ecg', competitive_caisr_indices]),
+        'eeg': _combine([competitive_eeg_indices, competitive_caisr_indices]),
+        'ecg_eeg': _combine(['ecg', competitive_eeg_indices, competitive_caisr_indices]),
     }
 
 

@@ -11,7 +11,10 @@ from src.eeg_processing import (
 )
 from src.pipeline import features
 from src.pipeline.features import get_feature_group_indices, get_feature_names
-from src.pipeline.training import _get_combined_model_indices
+from src.pipeline.training import (
+    COMPETITIVE_CAISR_FEATURE_NAMES,
+    _get_combined_model_indices,
+)
 from src.common.caisr import get_sleep_architecture_features
 
 
@@ -85,17 +88,22 @@ class CompetitiveEegSlowWaveIndicesTests(unittest.TestCase):
         ecg_eeg_names = [feature_names[index] for index in combined_indices['ecg_eeg']]
         self.assertFalse(any('NREM_SW_' in name for name in eeg_route_names))
         self.assertFalse(any('NREM_SW_' in name for name in ecg_eeg_names))
-        self.assertTrue(set(features.CHEAP_FEATURE_NAMES).issubset(eeg_route_names))
-        self.assertTrue(set(features.CHEAP_FEATURE_NAMES).issubset(ecg_eeg_names))
-        self.assertEqual(len(combined_indices['ecg_eeg']), 153)
+        self.assertTrue(set(COMPETITIVE_CAISR_FEATURE_NAMES).issubset(eeg_route_names))
+        self.assertTrue(set(COMPETITIVE_CAISR_FEATURE_NAMES).issubset(ecg_eeg_names))
+        excluded_cheap_features = set(features.CHEAP_FEATURE_NAMES) - set(COMPETITIVE_CAISR_FEATURE_NAMES)
+        self.assertFalse(set(eeg_route_names) & excluded_cheap_features)
+        self.assertFalse(set(ecg_eeg_names) & excluded_cheap_features)
+        self.assertEqual(len(combined_indices['ecg_eeg']), 142)
 
     def test_cheap_features_do_not_affect_modality_presence(self):
         feature_indices = get_feature_group_indices(include_demographics=True)
         combined_indices = _get_combined_model_indices(feature_indices)
-        cheap_indices = [get_feature_names().index(name) for name in features.CHEAP_FEATURE_NAMES]
-        self.assertFalse(any(index in feature_indices['eeg'] for index in cheap_indices))
-        self.assertFalse(any(index in feature_indices['ecg'] for index in cheap_indices))
-        self.assertTrue(all(index in combined_indices['ecg_eeg'] for index in cheap_indices))
+        competitive_indices = [
+            get_feature_names().index(name) for name in COMPETITIVE_CAISR_FEATURE_NAMES
+        ]
+        self.assertFalse(any(index in feature_indices['eeg'] for index in competitive_indices))
+        self.assertFalse(any(index in feature_indices['ecg'] for index in competitive_indices))
+        self.assertTrue(all(index in combined_indices['ecg_eeg'] for index in competitive_indices))
 
 
 if __name__ == '__main__':
