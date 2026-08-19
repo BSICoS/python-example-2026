@@ -1,32 +1,8 @@
-"""EEG feature helpers used by the active submission pipeline."""
-
-from contextlib import nullcontext, redirect_stdout
-import io
+"""EEG background feature helpers used by the active submission pipeline."""
 
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, welch
-
-from .swa import swa_CalculateReference
-from .swa import swa_FindSWChannels
-from .swa import swa_FindSWRef
-from .swa import swa_getInfoDefaults
-
-
-# --- REDUCED SLOW WAVE METRICS ---
-SLOW_WAVE_FEATURE_NAMES = (
-    'TotalSW',
-    'SWdensity',
-    'SWp2p_mean',
-    'SWnegSlope_mean',
-    'SWduration_mean',
-)
-
-_SLOW_WAVE_EVENT_FIELDS = {
-    'SWp2p': 'Ref_P2PAmp',
-    'SWnegSlope': 'Ref_NegSlope',
-}
-
 
 def _safe_sqrt_variance_ratio(numerator_signal, denominator_signal):
     numerator_var = np.var(numerator_signal)
@@ -85,122 +61,6 @@ def extract_band_powers(epochs, fs, win_len=2):
         complexities.append({'Hjorth_Mobility': mobility, 'Hjorth_Complexity': complexity})
 
     return pd.DataFrame(features), pd.DataFrame(complexities)
-
-
-def _finite_slow_wave_values(slow_waves, field_name):
-    values = []
-    for wave in slow_waves:
-        try:
-            value = float(np.asarray(wave[field_name]).squeeze())
-        except (KeyError, TypeError, ValueError):
-            continue
-        if np.isfinite(value):
-            values.append(value)
-    return np.asarray(values, dtype=float)
-
-
-def summarize_slow_waves(slow_waves, fs, signal_duration_seconds):
-    """Aggregate the event dictionaries returned by ``swa`` into scalar features.
-
-    Amplitudes and slopes retain the sign and units returned by ``swa``.
-    Durations and density are expressed in seconds and waves/minute, respectively.
-    """
-    if fs <= 0 or not np.isfinite(fs):
-        raise ValueError('fs must be a positive finite sampling frequency.')
-    if signal_duration_seconds <= 0 or not np.isfinite(signal_duration_seconds):
-        raise ValueError('signal_duration_seconds must be positive and finite.')
-
-    slow_waves = [] if slow_waves is None else list(slow_waves)
-    features = {name: np.nan for name in SLOW_WAVE_FEATURE_NAMES}
-    features['TotalSW'] = float(len(slow_waves))
-    features['SWdensity'] = float(len(slow_waves) / (signal_duration_seconds / 60.0))
-
-    # Compute mean for SWp2p and SWnegSlope
-    for feature_prefix, event_field in _SLOW_WAVE_EVENT_FIELDS.items():
-        values = _finite_slow_wave_values(slow_waves, event_field)
-        if values.size:
-            features[f'{feature_prefix}_mean'] = float(np.mean(values))
-
-    # Compute mean for SWduration
-    durations = []
-    for wave in slow_waves:
-        try:
-            duration = (
-                float(np.asarray(wave['Ref_UpInd']).squeeze())
-                - float(np.asarray(wave['Ref_DownInd']).squeeze())
-            ) / float(fs)
-        except (KeyError, TypeError, ValueError):
-            continue
-        if np.isfinite(duration) and duration > 0:
-            durations.append(duration)
-
-    if durations:
-        features['SWduration_mean'] = float(np.mean(durations))
-
-    return features
-
-
-def detect_slow_waves(signal, fs, verbose=False, sleep_stages=None, allowed_stages=None):
-    """Run the production detector, optionally restricting it to sample-wise stages.
-
-    Omitting both stage arguments preserves the production path exactly.  The
-    optional arguments are intentionally development-only: ``sleep_stages``
-    must already be aligned one-to-one with ``signal`` samples, and
-    ``allowed_stages`` is forwarded to the detector's existing stage gate.
-    """
-    signal = np.asarray(signal, dtype=float).reshape(-1)
-    if fs <= 0 or not np.isfinite(fs):
-        raise ValueError('fs must be a positive finite sampling frequency.')
-    if signal.size == 0:
-        raise ValueError('signal must contain at least one sample.')
-    if not np.all(np.isfinite(signal)):
-        raise ValueError('signal must contain only finite values.')
-
-    info = swa_getInfoDefaults.swa_getInfoDefaults({}, 'SW', method='envelope')
-    info['Electrodes'] = ['EEG']
-    info['Recording'] = {'sRate': float(fs)}
-    info['Parameters']['Ref_InspectionPoint'] = 'ZC'
-    # Spatial clustering is undefined for a single-channel invocation.
-    info['Parameters']['Channels_ClusterTest'] = False
-
-    if sleep_stages is not None or allowed_stages is not None:
-        if sleep_stages is None or allowed_stages is None:
-            raise ValueError('sleep_stages and allowed_stages must be provided together.')
-        sleep_stages = np.asarray(sleep_stages).reshape(-1)
-        if sleep_stages.size != signal.size:
-            raise ValueError('sleep_stages must have exactly one value per signal sample.')
-        info['Parameters']['Ref_UseStages'] = list(allowed_stages)
-
-    # swa consistently uses (channels, samples).
-    data = {'Raw': signal[np.newaxis, :]}
-    if sleep_stages is not None:
-        data['sleep_stages'] = sleep_stages
-    output_context = nullcontext() if verbose else redirect_stdout(io.StringIO())
-    with output_context:
-        data['SWRef'], info = swa_CalculateReference.swa_CalculateReference(
-            data['Raw'], info, False
-        )
-        data, info, slow_waves = swa_FindSWRef.swa_FindSWRef(data, info)
-        data, info, slow_waves = swa_FindSWChannels.swa_FindSWChannels(
-            data, info, slow_waves, flag_progress=verbose
-        )
-
-    return {
-        'events': slow_waves,
-        'info': info,
-        'filtered_signal': np.asarray(
-            data.get('Filtered', data['SWRef'])[0], dtype=float),
-        'sampling_frequency': float(fs),
-        'signal_duration_seconds': signal.size / float(fs),
-    }
-
-
-def get_SW_features(signal, fs, verbose=False):
-    """Detect slow waves with ``swa`` and return fixed-length scalar features."""
-    detection = detect_slow_waves(signal, fs, verbose=verbose)
-    return summarize_slow_waves(
-        detection['events'], fs=detection['sampling_frequency'],
-        signal_duration_seconds=detection['signal_duration_seconds'])
 
 
 def get_patient_profile(df_features):

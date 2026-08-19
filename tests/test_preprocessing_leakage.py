@@ -68,9 +68,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
         ], dtype=np.float32)
         labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
         feature_indices = {
-            'all': np.array([0, 1], dtype=np.int32),
             'demographics': np.array([0], dtype=np.int32),
-            'resp': np.array([1], dtype=np.int32),
             'eeg': np.array([], dtype=np.int32),
             'ecg': np.array([], dtype=np.int32),
         }
@@ -112,7 +110,11 @@ class PreprocessingLeakageTests(unittest.TestCase):
     def test_outer_fold_uses_only_its_own_inner_search_parameters(self):
         features = np.arange(16, dtype=np.float32).reshape(8, 2)
         labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
-        feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
+        feature_indices = {
+            'demographics': np.array([0], dtype=np.int32),
+            'eeg': np.array([1], dtype=np.int32),
+            'ecg': np.array([1], dtype=np.int32),
+        }
         split_plan = [
             FoldSplit(1, np.array([0, 1, 2, 3]), np.array([4, 5, 6, 7]), 'first'),
             FoldSplit(2, np.array([4, 5, 6, 7]), np.array([0, 1, 2, 3]), 'second'),
@@ -155,7 +157,6 @@ class PreprocessingLeakageTests(unittest.TestCase):
         ], dtype=np.float32)
         labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
         feature_indices = {
-            'all': np.array([0, 1], dtype=np.int32),
             'demographics': np.array([0], dtype=np.int32),
             'ecg': np.array([1], dtype=np.int32),
             'eeg': np.array([1], dtype=np.int32),
@@ -206,8 +207,6 @@ class PreprocessingLeakageTests(unittest.TestCase):
             'demographics': np.array([0], dtype=np.int32),
             'ecg': np.array([1], dtype=np.int32),
             'eeg': np.array([2], dtype=np.int32),
-            'resp': np.array([3], dtype=np.int32),
-            'all': np.arange(4, dtype=np.int32),
         }
         fitted_labels = []
         fitted_params = []
@@ -226,7 +225,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
                 feature_indices,
                 modality_presence_indices={
                     name: feature_indices[name]
-                    for name in ('ecg', 'eeg', 'resp')
+                    for name in ('ecg', 'eeg')
                 },
                 final_params=final_params,
             )
@@ -238,20 +237,16 @@ class PreprocessingLeakageTests(unittest.TestCase):
         self.assertEqual(len(fitted_labels), len(models))
         self.assertEqual(fitted_params, [final_params] * len(models))
 
-    def test_model_routing_prioritizes_ecg_eeg_over_respiration_routes(self):
-        models = {
-            name: object()
-            for name in ('ecg', 'eeg', 'resp', 'ecg_eeg', 'ecg_resp', 'eeg_resp', 'all')
-        }
+    def test_model_routing_prioritizes_ecg_eeg(self):
+        models = {name: object() for name in ('ecg', 'eeg', 'ecg_eeg')}
         modality_presence_indices = {
             'ecg': np.array([0], dtype=np.int32),
             'eeg': np.array([1], dtype=np.int32),
-            'resp': np.array([2], dtype=np.int32),
         }
 
         self.assertEqual(
             _select_ensemble_model_name(
-                np.array([1.0, 1.0, 1.0], dtype=np.float32),
+                np.array([1.0, 1.0], dtype=np.float32),
                 models,
                 modality_presence_indices,
             ),
@@ -259,7 +254,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
         )
         self.assertEqual(
             _select_ensemble_model_name(
-                np.array([np.nan, 1.0, 1.0], dtype=np.float32),
+                np.array([np.nan, 1.0], dtype=np.float32),
                 models,
                 modality_presence_indices,
             ),
@@ -267,7 +262,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
         )
         self.assertEqual(
             _select_ensemble_model_name(
-                np.array([1.0, np.nan, 1.0], dtype=np.float32),
+                np.array([1.0, np.nan], dtype=np.float32),
                 models,
                 modality_presence_indices,
             ),

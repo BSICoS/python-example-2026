@@ -19,6 +19,25 @@ from src.pipeline.metrics import (
 from src.pipeline.preprocessing import build_preprocessor
 from src.pipeline.training import _get_ecg_eeg_search_data
 
+
+def _full_ecg_eeg_search_data(
+    features,
+    labels,
+    feature_indices,
+    modality_presence_indices,
+    categorical_indices=None,
+    site_groups=None,
+):
+    return {
+        'features': features,
+        'labels': labels,
+        'categorical_indices': categorical_indices,
+        'site_groups': site_groups,
+        'route_name': 'ecg_eeg',
+        'raw_indices': np.arange(features.shape[1], dtype=np.int32),
+        'age_feature_index': 0,
+    }
+
 def _read_config_literal(name):
     config_path = Path(__file__).parents[1] / 'src' / 'pipeline' / 'config.py'
     module = ast.parse(config_path.read_text(encoding='utf-8'))
@@ -80,6 +99,7 @@ class CrossValidationScoringTests(unittest.TestCase):
             build_search_model=lambda labels: object(),
             fit_ensemble=lambda *args, **kwargs: None,
             predict_probabilities=lambda *args, **kwargs: None,
+            select_search_data=_full_ecg_eeg_search_data,
             search_age_feature_index=0,
             search_age_feature_scale=10.0,
             search_age_feature_offset=50.0,
@@ -93,8 +113,8 @@ class CrossValidationScoringTests(unittest.TestCase):
             params, score = runner.select_final_params(
                 features,
                 labels,
-                {'all': np.array([0, 1], dtype=np.int32)},
-                {'all': np.array([0, 1], dtype=np.int32)},
+                {'demographics': np.array([0], dtype=np.int32), 'eeg': np.array([1], dtype=np.int32), 'ecg': np.array([1], dtype=np.int32)},
+                {'eeg': np.array([1], dtype=np.int32), 'ecg': np.array([1], dtype=np.int32)},
             )
 
         estimator = search_class.call_args.kwargs['estimator']
@@ -111,7 +131,11 @@ class CrossValidationScoringTests(unittest.TestCase):
     def test_final_search_is_independent_from_random_oof_evaluation(self):
         features = np.arange(16, dtype=np.float32).reshape(8, 2)
         labels = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
-        feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
+        feature_indices = {
+            'demographics': np.array([0], dtype=np.int32),
+            'eeg': np.array([1], dtype=np.int32),
+            'ecg': np.array([1], dtype=np.int32),
+        }
 
         def run_with_final_params(final_params):
             search_calls = []
@@ -141,6 +165,7 @@ class CrossValidationScoringTests(unittest.TestCase):
                 predict_probabilities=lambda bundle, values: np.full(
                     len(values), bundle['models']['params']['max_depth'] / 10.0,
                 ),
+                select_search_data=_full_ecg_eeg_search_data,
             )
             with patch.object(runner, '_search_hyperparams', side_effect=record_search):
                 with redirect_stdout(io.StringIO()):
@@ -179,21 +204,20 @@ class CrossValidationScoringTests(unittest.TestCase):
 
     def test_outer_and_final_search_use_ecg_eeg_data(self):
         features = np.array([
-            [20.0, 0.0, 10.0, 20.0, 30.0],
-            [21.0, 1.0, np.nan, 21.0, 31.0],
-            [22.0, 0.0, 12.0, np.nan, 32.0],
-            [23.0, 1.0, 13.0, 23.0, 33.0],
+            [20.0, 0.0, 20.0, 30.0],
+            [21.0, 1.0, 21.0, 31.0],
+            [22.0, 0.0, np.nan, 32.0],
+            [23.0, 1.0, 23.0, 33.0],
         ], dtype=np.float32)
         labels = np.array([0, 1, 0, 1], dtype=np.int32)
         feature_indices = {
             'demographics': np.array([0, 1], dtype=np.int32),
-            'resp': np.array([2], dtype=np.int32),
-            'eeg': np.array([3], dtype=np.int32),
-            'ecg': np.array([4], dtype=np.int32),
+            'eeg': np.array([2], dtype=np.int32),
+            'ecg': np.array([3], dtype=np.int32),
         }
         modality_presence_indices = {
             name: feature_indices[name]
-            for name in ('resp', 'eeg', 'ecg')
+            for name in ('eeg', 'ecg')
         }
         search_calls = []
         runner = EnsembleCrossValidator(
@@ -242,9 +266,9 @@ class CrossValidationScoringTests(unittest.TestCase):
         self.assertEqual(selected_params[0]['params'], {'max_depth': 3})
         self.assertEqual(final_params, {'max_depth': 3})
         self.assertEqual(len(search_calls), 2)
-        self.assertTrue(np.array_equal(search_calls[0][0], features[[0, 1]][:, [0, 1, 3, 4]]))
+        self.assertTrue(np.array_equal(search_calls[0][0], features[[0, 1]][:, [0, 1, 2, 3]]))
         self.assertTrue(np.array_equal(search_calls[0][1], labels[[0, 1]]))
-        self.assertTrue(np.array_equal(search_calls[1][0], features[[0, 1, 3]][:, [0, 1, 3, 4]]))
+        self.assertTrue(np.array_equal(search_calls[1][0], features[[0, 1, 3]][:, [0, 1, 2, 3]]))
         self.assertTrue(np.array_equal(search_calls[1][1], labels[[0, 1, 3]]))
         self.assertEqual(search_calls[0][2]['categorical_indices'], [1])
         self.assertEqual(search_calls[1][2]['categorical_indices'], [1])
@@ -257,7 +281,11 @@ class CrossValidationScoringTests(unittest.TestCase):
         features = np.arange(12, dtype=np.float32).reshape(6, 2)
         labels = np.array([0, 1, 0, 1, 0, 1], dtype=np.int32)
         site_groups = np.array(['A', 'A', 'B', 'B', 'C', 'C'])
-        feature_indices = {'all': np.array([0, 1], dtype=np.int32)}
+        feature_indices = {
+            'demographics': np.array([0], dtype=np.int32),
+            'eeg': np.array([1], dtype=np.int32),
+            'ecg': np.array([1], dtype=np.int32),
+        }
         search_calls = []
         runner = EnsembleCrossValidator(
             config=CrossValidationConfig(
@@ -270,6 +298,7 @@ class CrossValidationScoringTests(unittest.TestCase):
             build_search_model=lambda fold_labels: object(),
             fit_ensemble=lambda *args, **kwargs: {},
             predict_probabilities=lambda bundle, values: np.full(len(values), 0.5),
+            select_search_data=_full_ecg_eeg_search_data,
         )
 
         def record_search(search_features, search_labels, **kwargs):

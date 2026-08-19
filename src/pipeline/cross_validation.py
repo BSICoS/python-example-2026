@@ -580,24 +580,16 @@ class EnsembleCrossValidator:
         categorical_indices=None,
         site_groups=None,
     ):
-        if self.select_search_data is not None:
-            return self.select_search_data(
-                features,
-                labels,
-                feature_indices,
-                modality_presence_indices,
-                categorical_indices=categorical_indices,
-                site_groups=site_groups,
-            )
-        return {
-            'features': features,
-            'labels': labels,
-            'categorical_indices': categorical_indices,
-            'site_groups': site_groups,
-            'route_name': 'all',
-            'raw_indices': np.arange(features.shape[1], dtype=np.int32),
-            'age_feature_index': self.search_age_feature_index,
-        }
+        if self.select_search_data is None:
+            raise ValueError('A production search-data selector is required.')
+        return self.select_search_data(
+            features,
+            labels,
+            feature_indices,
+            modality_presence_indices,
+            categorical_indices=categorical_indices,
+            site_groups=site_groups,
+        )
 
     def _print_search_data_summary(self, search_data):
         print(f"    Hyperparameter search route: {search_data['route_name']}")
@@ -605,9 +597,6 @@ class EnsembleCrossValidator:
         print(f"    Search features: {len(search_data['raw_indices'])}")
 
     def _get_model_feature_indices(self, model_name, feature_indices):
-        if model_name == 'all':
-            return np.asarray(feature_indices.get('all', []), dtype=np.int32)
-
         indices = set(np.asarray(feature_indices.get('demographics', []), dtype=np.int32).tolist())
         for modality_name in model_name.split('_'):
             indices.update(

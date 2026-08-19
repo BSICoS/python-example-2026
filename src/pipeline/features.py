@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 
 from src.common.channel_utils import normalize_channel_label
-from helper_code import HEADERS, PHYSIOLOGICAL_DATA_SUBFOLDER, load_age, load_sex, load_signal_data
-from src.ecg_processing import ECG_FEATURE_LENGTH, ECG_FEATURE_NAMES, ECG_KEYWORDS, processECG
+from helper_code import HEADERS, PHYSIOLOGICAL_DATA_SUBFOLDER, load_sex, load_signal_data
+from src.ecg_processing import ECG_FEATURE_NAMES, ECG_KEYWORDS, processECG
 from src.eeg_processing import (
-    EEG_CHANNEL_SPECS, EEG_FEATURE_LENGTH, EEG_FEATURE_NAMES,
+    EEG_CHANNEL_SPECS, EEG_FEATURE_NAMES,
     EEG_SEGMENT_FEATURE_NAMES, processEEG, _get_eeg_aliases,
 )
 from src.resp_processing import (
@@ -228,7 +228,6 @@ def get_feature_group_indices(include_demographics=False):
             groups[group_name] = group_indices
         start += group_length
 
-    groups['all'] = np.arange(len(FEATURE_NAMES), dtype=np.int32)
     return groups
 
 def _iter_signal_segments(physiological_data, physiological_fs):

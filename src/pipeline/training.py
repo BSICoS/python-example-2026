@@ -1,8 +1,7 @@
 import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, f1_score, confusion_matrix
+from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, confusion_matrix
 import numpy as np
 import pandas as pd
 from tqdm import tqdm

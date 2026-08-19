@@ -12,8 +12,6 @@ param(
         "train-dev",
         "run-dev",
         "eval-dev",
-        "slow-wave-audit-dev",
-        "slow-wave-method-dev",
         "clean"
     )]
     [string]$Command
@@ -285,38 +283,6 @@ function Eval-Dev {
     }
 }
 
-function Slow-Wave-Audit-Dev {
-
-    $CODE_PATH = Get-AbsolutePath "."
-    $FULL_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $DIAGNOSTICS = Join-Path $CODE_PATH ".feature_cache/diagnostics/slow_waves"
-
-    Ensure-Directory $DIAGNOSTICS
-
-    docker run --rm `
-        -v "${CODE_PATH}:/challenge" `
-        -v "${FULL_DATA}:/challenge/training_data:ro" `
-        $IMAGE_NAME `
-        python -m src.slow_wave_audit --data-folder training_data `
-            --output-folder .feature_cache/diagnostics/slow_waves
-}
-
-function Slow-Wave-Method-Dev {
-
-    $CODE_PATH = Get-AbsolutePath "."
-    $FULL_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $DIAGNOSTICS = Join-Path $CODE_PATH ".feature_cache/diagnostics/slow_wave_methods"
-
-    Ensure-Directory $DIAGNOSTICS
-
-    docker run --rm `
-        -v "${CODE_PATH}:/challenge" `
-        -v "${FULL_DATA}:/challenge/training_data:ro" `
-        $IMAGE_NAME `
-        python -m src.slow_wave_methods --data-folder training_data `
-            --output-folder .feature_cache/diagnostics/slow_wave_methods
-}
-
 function Clean-All {
 
     Remove-Item -Recurse -Force $MODEL_FULL_REL -ErrorAction SilentlyContinue
@@ -345,7 +311,5 @@ switch ($Command) {
     "run-dev"     { Run-Dev }
     "eval-dev"    { Eval-Dev }
     "clean"       { Clean-All }
-    "slow-wave-audit-dev" { Slow-Wave-Audit-Dev }
-    "slow-wave-method-dev" { Slow-Wave-Method-Dev }
 
 }

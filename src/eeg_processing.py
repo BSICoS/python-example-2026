@@ -99,8 +99,8 @@ def _get_channel_signal(channel_name, physiological_data, physiological_fs, eeg_
     )
 
 
-def prepare_slow_wave_detector_input(signal, fs):
-    """Apply the exact sanitizing and resampling used before SW detection."""
+def prepare_eeg_signal(signal, fs):
+    """Sanitize, validate, and resample an EEG signal for background features."""
     signal = np.nan_to_num(np.asarray(signal, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
     if signal.size < max(int(fs * 30), 2):
         return None
@@ -112,12 +112,12 @@ def prepare_slow_wave_detector_input(signal, fs):
 
 
 def _extract_channel_metrics(signal, fs):
-    prepared = prepare_slow_wave_detector_input(signal, fs)
+    prepared = prepare_eeg_signal(signal, fs)
     if prepared is None:
         return None
-    detector_signal, fs = prepared
+    prepared_signal, fs = prepared
 
-    filtered = eeg_features.butter_bandpass_filter(detector_signal, lowcut=0.3, highcut=35, fs=fs, order=4)
+    filtered = eeg_features.butter_bandpass_filter(prepared_signal, lowcut=0.3, highcut=35, fs=fs, order=4)
     signal_std = np.std(filtered)
     if signal_std == 0 or not np.isfinite(signal_std):
         return None
@@ -175,6 +175,3 @@ def processEEG(physiological_data, physiological_fs, csv_path):
         values.append(float(channel_metrics.get(metric_name, np.nan)))
 
     return np.asarray(values, dtype=np.float32)
-
-
-_normalize_label = normalize_channel_label
