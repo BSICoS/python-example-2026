@@ -372,8 +372,14 @@ def summarize_slow_waves(slow_waves, fs, signal_duration_seconds):
     return features
 
 
-def detect_slow_waves(signal, fs, verbose=False):
-    """Run the production slow-wave detector and expose its events and metadata."""
+def detect_slow_waves(signal, fs, verbose=False, sleep_stages=None, allowed_stages=None):
+    """Run the production detector, optionally restricting it to sample-wise stages.
+
+    Omitting both stage arguments preserves the production path exactly.  The
+    optional arguments are intentionally development-only: ``sleep_stages``
+    must already be aligned one-to-one with ``signal`` samples, and
+    ``allowed_stages`` is forwarded to the detector's existing stage gate.
+    """
     signal = np.asarray(signal, dtype=float).reshape(-1)
     if fs <= 0 or not np.isfinite(fs):
         raise ValueError('fs must be a positive finite sampling frequency.')
@@ -389,8 +395,18 @@ def detect_slow_waves(signal, fs, verbose=False):
     # Spatial clustering is undefined for a single-channel invocation.
     info['Parameters']['Channels_ClusterTest'] = False
 
+    if sleep_stages is not None or allowed_stages is not None:
+        if sleep_stages is None or allowed_stages is None:
+            raise ValueError('sleep_stages and allowed_stages must be provided together.')
+        sleep_stages = np.asarray(sleep_stages).reshape(-1)
+        if sleep_stages.size != signal.size:
+            raise ValueError('sleep_stages must have exactly one value per signal sample.')
+        info['Parameters']['Ref_UseStages'] = list(allowed_stages)
+
     # swa consistently uses (channels, samples).
     data = {'Raw': signal[np.newaxis, :]}
+    if sleep_stages is not None:
+        data['sleep_stages'] = sleep_stages
     output_context = nullcontext() if verbose else redirect_stdout(io.StringIO())
     with output_context:
         data['SWRef'], info = swa_CalculateReference.swa_CalculateReference(

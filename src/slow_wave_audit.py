@@ -70,12 +70,12 @@ def translate_stage_code(value):
     return STAGE_NAMES.get(code, 'unavailable')
 
 
-def build_segment_intervals(recording_duration_seconds):
-    """Return the exact 5-minute/15-minute intervals used by production."""
+def build_segment_intervals(recording_duration_seconds, stride_seconds=SEGMENT_STRIDE_SECONDS):
+    """Return full production-length intervals at the requested development stride."""
     last_start = float(recording_duration_seconds) - SEGMENT_DURATION_SECONDS
     if last_start < 0:
         return []
-    starts = np.arange(0.0, last_start + 1e-9, SEGMENT_STRIDE_SECONDS)
+    starts = np.arange(0.0, last_start + 1e-9, float(stride_seconds))
     return [(float(start), float(start + SEGMENT_DURATION_SECONDS)) for start in starts]
 
 
@@ -276,11 +276,12 @@ def _event_window(filtered_signal, trough_index, fs, half_seconds=2.0):
 class TriggeredWaveforms:
     """Exact running mean plus bounded deterministic samples for quantiles."""
 
-    def __init__(self, max_quantile_samples=20000):
+    def __init__(self, max_quantile_samples=20000, waveform_domain='sanitized_resampled_eeg'):
         self.max_quantile_samples = int(max_quantile_samples)
         self.groups = {}
         self.weighted_nrem_groups = {}
         self.rng = np.random.default_rng(20260819)
+        self.waveform_domain = str(waveform_domain)
 
     def add(self, key, waveform):
         waveform = np.asarray(waveform, dtype=float)
@@ -307,7 +308,7 @@ class TriggeredWaveforms:
     def save(self, path, fs=200.0):
         payload = {
             'time_seconds': np.arange(-int(2 * fs), int(2 * fs) + 1) / fs,
-            'waveform_domain': np.asarray('sanitized_resampled_eeg'),
+            'waveform_domain': np.asarray(self.waveform_domain),
         }
         for (site, channel, stage), group in sorted(self.groups.items()):
             prefix = f'{site}__{channel.replace("-", "_")}__{stage}'
