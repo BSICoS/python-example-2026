@@ -1,4 +1,4 @@
-# Script unificado de ejecución (`run.sh`)
+# Script unificado de ejecución (`run.ps1`)
 
 Este documento es la guía operativa única para ejecutar el proyecto.
 Aquí se define el orden recomendado y los comandos asociados.
@@ -15,12 +15,9 @@ data/training_set/
 data/supplementary_set/
 ```
 
-⚠️ Si el dataset está en otra ubicación, modificar las variables `$TRAIN_DATA_REL` y `$RUN_DATA_REL`
-dentro de `run.sh`.
+⚠️ Si el dataset está en otra ubicación, modificar las rutas correspondientes en `run.ps1`.
 
-⚠️ Ejecutar los comandos desde Git Bash.
-
-ℹ️ Existen scripts equivalentes en PowerShell (`run.ps1` y `scripts/create_smoke.ps1`) para quienes prefieran ese entorno.
+⚠️ Ejecutar los comandos desde PowerShell.
 
 ℹ️ Para contexto general y definición de artefactos, ver `docs/02_docker.md` y `docs/03_smoke_dataset.md`.
 ---
@@ -33,96 +30,50 @@ Desde la raíz del repositorio.
 
 ### Construir imagen Docker
 
-```bash
-./run.sh build
+```powershell
+.\run.ps1 build
 ```
 
 Ejecutar la primera vez y cada vez que cambien `requirements.txt` o `Dockerfile`.
 
 ### Crear dataset smoke (5 sujetos)
 
-```bash
-./run.sh smoke
+```powershell
+.\run.ps1 smoke
 ```
 
 Genera `data/training_smoke/`.
 
-## 2) Ciclo en modo desarrollo (datasets completos, sin rebuild)
+## 2) Entrenamiento completo
 
-### Entrenar en modo desarrollo
+### Entrenar sin reconstruir la imagen
 
-```bash
-./run.sh train-dev
+```powershell
+.\run.ps1 train-dev
 ```
 
-Usa `data/training_set/` y guarda modelo en `model/`. El código fuente se monta en el contenedor, por lo que no requiere reconstruir la imagen tras cambios de Python.
+Usa `data/training_set/` y guarda el modelo en `model/`.
 
-### Generar predicciones (inferencia) en modo desarrollo
+### Comprobación opcional de compatibilidad suplementaria
 
-```bash
-./run.sh run-dev
+```powershell
+.\run.ps1 supplementary
 ```
 
-Genera resultados en `outputs/`. Si `data/test_set/` tiene etiquetas, también imprime métricas de evaluación.
-
-### Evaluar predicciones existentes en modo desarrollo
-
-```bash
-./run.sh eval-dev
-```
-
-Reutiliza `outputs/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia si `data/test_set/` contiene etiquetas.
-
-### Secuencia típica en modo desarrollo
-
-```bash
-./run.sh build        # solo la primera vez o tras cambiar Dockerfile/requirements.txt
-./run.sh train-dev
-./run.sh run-dev
-./run.sh eval-dev     # opcional si el dataset de ejecución tiene etiquetas
-```
-
-## 3) Validación completa
-
-### Entrenar con dataset completo
-
-```bash
-./run.sh train
-```
-
-Guarda el modelo en `model/`.
-
-### Generar predicciones (inferencia) completas
-
-```bash
-./run.sh run
-```
-
-Genera resultados en `outputs/` usando `data/test_set/`.
-Si el dataset no tiene etiquetas (como en `test_set`), el script omite la evaluación automáticamente.
-
-### Evaluar predicciones existentes completas
-
-```bash
-./run.sh eval
-```
-
-Reutiliza `outputs/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
-Evalúa contra `data/test_set/`.
-Si no hay etiquetas en ese set, el script omite la evaluación automáticamente.
+Ejecuta la ruta oficial de inferencia de la imagen Docker sobre `data/supplementary_set/` y escribe predicciones en `outputs_supplementary/`. El set suplementario no es un conjunto de validación: sus predicciones no se evalúan ni se usan para selección de modelo.
 
 ### Evaluar predicciones existentes del dataset smoke
 
-```bash
-./run.sh eval-smoke
+```powershell
+.\run.ps1 eval-smoke
 ```
 
 Reutiliza `outputs_smoke/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
 
-## 4) Limpieza de artefactos
+## 3) Limpieza de artefactos
 
-```bash
-./run.sh clean
+```powershell
+.\run.ps1 clean
 ```
 
 Elimina `model/`, `model_smoke/`, `outputs/` y `outputs_smoke/`.

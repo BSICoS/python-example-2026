@@ -5,13 +5,10 @@ param(
         "smoke",
         "train",
         "train-smoke",
-        "run",
         "run-smoke",
-        "eval",
         "eval-smoke",
         "train-dev",
-        "run-dev",
-        "eval-dev",
+        "supplementary",
         "clean"
     )]
     [string]$Command
@@ -23,12 +20,12 @@ param(
 
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 # IMPORTANTE:
-# Si tu dataset no está en data/training_set o data/test_set,
+# Si tu dataset no está en data/training_set o data/supplementary_set,
 # modifica estas rutas.
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 $TRAIN_DATA_REL = "data/training_set"
-$RUN_DATA_REL = "data/test_set"
 $SMOKE_DATA_REL = "data/training_smoke"
+$SUPPLEMENTARY_DATA_REL = "data/supplementary_set"
 
 $IMAGE_NAME = "cinc2026"
 
@@ -36,8 +33,8 @@ $MODEL_FULL_REL = "model"
 $MODEL_SMOKE_REL = "model_smoke"
 $FEATURE_CACHE_REL = ".feature_cache"
 
-$OUT_FULL_REL = "outputs"
 $OUT_SMOKE_REL = "outputs_smoke"
+$OUT_SUPPLEMENTARY_REL = "outputs_supplementary"
 $DEMOGRAPHICS_FILE = "demographics.csv"
 
 # ============================================
@@ -77,26 +74,6 @@ function Invoke-Evaluation($DataPath, $OutputPath, $PrevalencePath, $Label) {
         -v "${PrevalencePath}:/challenge/prevalence_data:ro" `
         $IMAGE_NAME `
         python evaluate_model.py -d "/challenge/eval_data/$DEMOGRAPHICS_FILE" -o "/challenge/eval_outputs/$DEMOGRAPHICS_FILE" -p "/challenge/prevalence_data/$DEMOGRAPHICS_FILE"
-}
-
-function Invoke-EvaluationDev($CodePath, $DataPath, $OutputPath, $PrevalencePath, $Label) {
-    Write-Host "Evaluating $Label predictions..."
-    docker run --rm `
-        -v "${CodePath}:/challenge" `
-        -v "${DataPath}:/challenge/eval_data:ro" `
-        -v "${PrevalencePath}:/challenge/prevalence_data:ro" `
-        $IMAGE_NAME `
-        python evaluate_model.py -d "/challenge/eval_data/$DEMOGRAPHICS_FILE" -o "$OutputPath/$DEMOGRAPHICS_FILE" -p "/challenge/prevalence_data/$DEMOGRAPHICS_FILE"
-}
-
-function Test-DatasetHasLabels($DataPath) {
-    $demographicsPath = Join-Path $DataPath $DEMOGRAPHICS_FILE
-    if (!(Test-Path $demographicsPath)) {
-        return $false
-    }
-
-    $header = Get-Content -Path $demographicsPath -TotalCount 1
-    return $header -match "Cognitive_Impairment"
 }
 
 # ============================================
@@ -148,33 +125,6 @@ function Train-Smoke {
         python train_model.py -d training_data -m model -v
 }
 
-function Run-Full {
-
-    $RUN_DATA = Get-AbsolutePath $RUN_DATA_REL
-    $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $MODEL_FULL = Get-AbsolutePath $MODEL_FULL_REL
-    $OUT_FULL = Join-Path (Get-AbsolutePath ".") $OUT_FULL_REL
-    $FEATURE_CACHE = Join-Path (Get-AbsolutePath ".") $FEATURE_CACHE_REL
-
-    Ensure-Directory $OUT_FULL
-    Ensure-Directory $FEATURE_CACHE
-
-    $GPU_ARGS = Get-DockerGpuArgs
-    docker run --rm $GPU_ARGS `
-        -v "${RUN_DATA}:/challenge/holdout_data:ro" `
-        -v "${MODEL_FULL}:/challenge/model:ro" `
-        -v "${OUT_FULL}:/challenge/holdout_outputs" `
-        -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
-        $IMAGE_NAME `
-        python run_model.py -d holdout_data -m model -o holdout_outputs -v
-
-    if (Test-DatasetHasLabels $RUN_DATA) {
-        Invoke-Evaluation $RUN_DATA $OUT_FULL $PREVALENCE_DATA "run-dataset"
-    } else {
-        Write-Host "Skipping evaluation for run dataset (labels not present in $RUN_DATA_REL/$DEMOGRAPHICS_FILE)."
-    }
-}
-
 function Run-Smoke {
 
     $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
@@ -196,19 +146,6 @@ function Run-Smoke {
         python run_model.py -d holdout_data -m model -o holdout_outputs -v
 
     Invoke-Evaluation $SMOKE_DATA $OUT_SMOKE $PREVALENCE_DATA "smoke"
-}
-
-function Eval-Full {
-
-    $RUN_DATA = Get-AbsolutePath $RUN_DATA_REL
-    $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $OUT_FULL = Get-AbsolutePath $OUT_FULL_REL
-
-    if (Test-DatasetHasLabels $RUN_DATA) {
-        Invoke-Evaluation $RUN_DATA $OUT_FULL $PREVALENCE_DATA "run-dataset"
-    } else {
-        Write-Host "Skipping evaluation for run dataset (labels not present in $RUN_DATA_REL/$DEMOGRAPHICS_FILE)."
-    }
 }
 
 function Eval-Smoke {
@@ -243,52 +180,37 @@ function Train-Dev {
         python train_model.py -d training_data -m model -v
 }
 
-function Run-Dev {
+function Run-Supplementary {
 
-    $CODE_PATH = Get-AbsolutePath "."
-    $RUN_DATA = Get-AbsolutePath $RUN_DATA_REL
-    $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
+    $MODEL_FILE = Join-Path $MODEL_FULL_REL "model.sav"
+    if (!(Test-Path $MODEL_FILE)) {
+        throw "A trained model is required at $MODEL_FILE. Run '.\run.ps1 train' first."
+    }
+
+    $SUPPLEMENTARY_DATA = Get-AbsolutePath $SUPPLEMENTARY_DATA_REL
     $MODEL_FULL = Get-AbsolutePath $MODEL_FULL_REL
-    $OUT_FULL = Join-Path $CODE_PATH $OUT_FULL_REL
-    $FEATURE_CACHE = Join-Path $CODE_PATH $FEATURE_CACHE_REL
+    $OUT_SUPPLEMENTARY = Join-Path (Get-AbsolutePath ".") $OUT_SUPPLEMENTARY_REL
+    $FEATURE_CACHE = Join-Path (Get-AbsolutePath ".") $FEATURE_CACHE_REL
 
-    Ensure-Directory $OUT_FULL
+    Ensure-Directory $OUT_SUPPLEMENTARY
     Ensure-Directory $FEATURE_CACHE
 
     $GPU_ARGS = Get-DockerGpuArgs
     docker run --rm $GPU_ARGS `
-        -v "${CODE_PATH}:/challenge" `
-        -v "${RUN_DATA}:/challenge/holdout_data:ro" `
+        -v "${SUPPLEMENTARY_DATA}:/challenge/supplementary_data:ro" `
         -v "${MODEL_FULL}:/challenge/model:ro" `
+        -v "${OUT_SUPPLEMENTARY}:/challenge/supplementary_outputs" `
+        -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
         $IMAGE_NAME `
-        python run_model.py -d holdout_data -m model -o outputs -v
-
-    if (Test-DatasetHasLabels $RUN_DATA) {
-        Invoke-EvaluationDev $CODE_PATH $RUN_DATA "/challenge/outputs" $PREVALENCE_DATA "development run-dataset"
-    } else {
-        Write-Host "Skipping evaluation for run dataset (labels not present in $RUN_DATA_REL/$DEMOGRAPHICS_FILE)."
-    }
-}
-
-function Eval-Dev {
-
-    $CODE_PATH = Get-AbsolutePath "."
-    $RUN_DATA = Get-AbsolutePath $RUN_DATA_REL
-    $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-
-    if (Test-DatasetHasLabels $RUN_DATA) {
-        Invoke-EvaluationDev $CODE_PATH $RUN_DATA "/challenge/outputs" $PREVALENCE_DATA "development run-dataset"
-    } else {
-        Write-Host "Skipping evaluation for run dataset (labels not present in $RUN_DATA_REL/$DEMOGRAPHICS_FILE)."
-    }
+        python run_model.py -d supplementary_data -m model -o supplementary_outputs -v
 }
 
 function Clean-All {
 
     Remove-Item -Recurse -Force $MODEL_FULL_REL -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $MODEL_SMOKE_REL -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $OUT_FULL_REL -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $OUT_SMOKE_REL -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $OUT_SUPPLEMENTARY_REL -ErrorAction SilentlyContinue
 
     Write-Host "Modelos y outputs eliminados."
 }
@@ -303,13 +225,10 @@ switch ($Command) {
     "smoke"       { Create-Smoke }
     "train"       { Train-Full }
     "train-smoke" { Train-Smoke }
-    "run"         { Run-Full }
     "run-smoke"   { Run-Smoke }
-    "eval"        { Eval-Full }
     "eval-smoke"  { Eval-Smoke }
     "train-dev"   { Train-Dev }
-    "run-dev"     { Run-Dev }
-    "eval-dev"    { Eval-Dev }
+    "supplementary" { Run-Supplementary }
     "clean"       { Clean-All }
 
 }
