@@ -468,14 +468,17 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
     # Combine demographic and physiological features first
     combined = np.hstack([demographic_features, physiological_features]).astype(np.float32)
 
-    # Fill in ECGage_Age_Diff if it exists in feature names
+    # Fill in ECGage_Age_Diff within the legacy demographic/physiology schema.
     feature_names = get_feature_names()
     if 'ECGage_Age_Diff' in feature_names:
         diff_idx = feature_names.index('ECGage_Age_Diff')
         
-        # Make sure vector length matches feature_names length
-        if len(combined) < len(feature_names):
-            combined = np.pad(combined, (0, len(feature_names) - len(combined)), constant_values=np.nan)
+        if len(combined) < LEGACY_FEATURE_VECTOR_LENGTH:
+            combined = np.pad(
+                combined,
+                (0, LEGACY_FEATURE_VECTOR_LENGTH - len(combined)),
+                constant_values=np.nan,
+            )
         
         # Calculate diff if ECGage_Median is present
         if 'ECGage_Median' in feature_names:
@@ -487,12 +490,15 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
             else:
                 combined[diff_idx] = np.nan
 
-    # Ensure output strictly matches expected FEATURE_NAMES length
-    if len(combined) != len(feature_names):
-        if len(combined) > len(feature_names):
-            combined = combined[:len(feature_names)]
+    if len(combined) != LEGACY_FEATURE_VECTOR_LENGTH:
+        if len(combined) > LEGACY_FEATURE_VECTOR_LENGTH:
+            combined = combined[:LEGACY_FEATURE_VECTOR_LENGTH]
         else:
-            combined = np.pad(combined, (0, len(feature_names) - len(combined)), constant_values=np.nan)
+            combined = np.pad(
+                combined,
+                (0, LEGACY_FEATURE_VECTOR_LENGTH - len(combined)),
+                constant_values=np.nan,
+            )
 
     cheap_features = _extract_cheap_features(
         patient_data, data_folder, site_id, patient_id, session_id)

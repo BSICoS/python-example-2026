@@ -45,6 +45,19 @@ class CompetitiveEegSlowWaveIndicesTests(unittest.TestCase):
                     record, directory, {'BMI': 25.0}, return_cache_hit=True)
         self.assertTrue(cache_hit)
         np.testing.assert_array_equal(result, np.hstack([legacy, cheap]))
+        self.assertEqual(result.size, 213)
+
+    def test_fresh_vector_has_the_current_schema_length(self):
+        physiological = np.arange(features.LEGACY_FEATURE_VECTOR_LENGTH - 2, dtype=np.float32)
+        cheap = np.arange(len(features.CHEAP_FEATURE_NAMES), dtype=np.float32)
+        with patch.object(features.os.path, 'exists', return_value=True), \
+             patch.object(features, '_load_required_signal_data', return_value=({}, {})), \
+             patch.object(features, 'extract_extended_physiological_features', return_value=physiological), \
+             patch.object(features, '_extract_cheap_features', return_value=cheap):
+            vector = features._compute_record_feature_vector(
+                {'Age': 70, 'Sex': 'Male'}, 'data', 'I0002', 'sub-I0002000000001', 1,
+                'channel_table.csv', True)
+        self.assertEqual(vector.size, 213)
     def test_production_features_keep_slow_wave_positions_as_nan(self):
         background = np.arange(len(EEG_BACKGROUND_AGGREGATED_FEATURE_NAMES), dtype=np.float32)
         resp = np.full(len(features.FEATURE_NAME_GROUPS['resp']), np.nan, dtype=np.float32)
@@ -72,7 +85,17 @@ class CompetitiveEegSlowWaveIndicesTests(unittest.TestCase):
         ecg_eeg_names = [feature_names[index] for index in combined_indices['ecg_eeg']]
         self.assertFalse(any('NREM_SW_' in name for name in eeg_route_names))
         self.assertFalse(any('NREM_SW_' in name for name in ecg_eeg_names))
-        self.assertEqual(len(combined_indices['ecg_eeg']), 140)
+        self.assertTrue(set(features.CHEAP_FEATURE_NAMES).issubset(eeg_route_names))
+        self.assertTrue(set(features.CHEAP_FEATURE_NAMES).issubset(ecg_eeg_names))
+        self.assertEqual(len(combined_indices['ecg_eeg']), 153)
+
+    def test_cheap_features_do_not_affect_modality_presence(self):
+        feature_indices = get_feature_group_indices(include_demographics=True)
+        combined_indices = _get_combined_model_indices(feature_indices)
+        cheap_indices = [get_feature_names().index(name) for name in features.CHEAP_FEATURE_NAMES]
+        self.assertFalse(any(index in feature_indices['eeg'] for index in cheap_indices))
+        self.assertFalse(any(index in feature_indices['ecg'] for index in cheap_indices))
+        self.assertTrue(all(index in combined_indices['ecg_eeg'] for index in cheap_indices))
 
 
 if __name__ == '__main__':

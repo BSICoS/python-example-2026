@@ -22,7 +22,12 @@ from .config import (
     RANDOM_CV_N_SPLITS,
 )
 from .cross_validation import CrossValidationConfig, EnsembleCrossValidator, normalize_site_group
-from .features import get_feature_group_indices, get_feature_names, get_or_create_record_feature_vector
+from .features import (
+    CHEAP_FEATURE_NAMES,
+    get_feature_group_indices,
+    get_feature_names,
+    get_or_create_record_feature_vector,
+)
 from .metrics import compute_age_conditioned_auroc as compute_auroc_age
 from .preprocessing import build_preprocessor, get_processed_feature_names, remap_feature_indices
 
@@ -257,6 +262,9 @@ def _get_combined_model_indices(feature_indices):
     """
     demo_indices = np.asarray(feature_indices.get('demographics', []), dtype=np.int32)
     feature_names = get_feature_names()
+    cheap_indices = np.asarray([
+        feature_names.index(name) for name in CHEAP_FEATURE_NAMES
+    ], dtype=np.int32)
     eeg_indices = np.asarray(feature_indices.get('eeg', []), dtype=np.int32)
     competitive_eeg_indices = np.asarray([
         feature_index
@@ -272,9 +280,9 @@ def _get_combined_model_indices(feature_indices):
         return np.array(sorted(list(combined)), dtype=np.int32)
 
     return {
-        'ecg': _combine(['ecg']),
-        'eeg': _combine([competitive_eeg_indices]),
-        'ecg_eeg': _combine(['ecg', competitive_eeg_indices]),
+        'ecg': _combine(['ecg', cheap_indices]),
+        'eeg': _combine([competitive_eeg_indices, cheap_indices]),
+        'ecg_eeg': _combine(['ecg', competitive_eeg_indices, cheap_indices]),
     }
 
 
