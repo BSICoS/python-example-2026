@@ -6,9 +6,13 @@ import numpy as np
 import pandas as pd
 
 from src.common.channel_utils import normalize_channel_label
+from src.common.caisr import load_annotation, unavailable_annotation
 from helper_code import HEADERS, PHYSIOLOGICAL_DATA_SUBFOLDER, load_age, load_sex, load_signal_data
 from src.ecg_processing import ECG_FEATURE_LENGTH, ECG_FEATURE_NAMES, ECG_KEYWORDS, processECG
-from src.eeg_processing import EEG_CHANNEL_SPECS, EEG_FEATURE_LENGTH, EEG_FEATURE_NAMES, processEEG, _get_eeg_aliases
+from src.eeg_processing import (
+    EEG_CHANNEL_SPECS, EEG_FEATURE_LENGTH, EEG_FEATURE_NAMES,
+    EEG_SEGMENT_FEATURE_NAMES, extract_record_slow_wave_features, processEEG, _get_eeg_aliases,
+)
 from src.resp_processing import (
     RESP_FEATURE_LENGTH,
     RESP_FEATURE_NAMES,
@@ -48,7 +52,7 @@ def _build_aggregated_feature_names(segment_feature_names):
 FEATURE_NAME_GROUPS = {
     'demographics': DEMOGRAPHIC_FEATURE_NAMES,
     'resp': _build_aggregated_feature_names(RESP_FEATURE_NAMES),
-    'eeg': _build_aggregated_feature_names(EEG_FEATURE_NAMES),
+    'eeg': EEG_FEATURE_NAMES,
     'ecg': _build_aggregated_feature_names(ECG_FEATURE_NAMES),
 }
 FEATURE_NAMES = (
@@ -402,21 +406,25 @@ def _extract_respiration_and_ecg_features(
         ),
     )
 
-def extract_extended_physiological_features(physiological_data, physiological_fs, csv_path=DEFAULT_CSV_PATH):
+def extract_extended_physiological_features(physiological_data, physiological_fs, csv_path=DEFAULT_CSV_PATH,
+                                             caisr_annotation=None):
     resp_features, ecg_features = _extract_respiration_and_ecg_features(
         physiological_data,
         physiological_fs,
         csv_path,
     )
-    eeg_features = _extract_segmented_features(
+    eeg_background_features = _extract_segmented_features(
         processEEG,
-        EEG_FEATURE_NAMES,
+        EEG_SEGMENT_FEATURE_NAMES,
         physiological_data,
         physiological_fs,
         csv_path,
     )
+    eeg_slow_wave_features = extract_record_slow_wave_features(
+        physiological_data, physiological_fs, csv_path,
+        unavailable_annotation() if caisr_annotation is None else caisr_annotation)
 
-    return np.hstack([resp_features, eeg_features, ecg_features]).astype(np.float32)
+    return np.hstack([resp_features, eeg_background_features, eeg_slow_wave_features, ecg_features]).astype(np.float32)
 
 def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_id, session_id, csv_path, require_physiological_data):
     demographic_features = extract_demographic_features(patient_data)
@@ -432,10 +440,13 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
 
     if os.path.exists(physiological_data_file):
         physiological_data, physiological_fs = _load_required_signal_data(physiological_data_file, csv_path)
+        caisr_annotation = load_annotation(
+            data_folder, site_id, patient_data.get(HEADERS['bids_folder'], patient_id), session_id)
         physiological_features = extract_extended_physiological_features(
             physiological_data,
             physiological_fs,
             csv_path=csv_path,
+            caisr_annotation=caisr_annotation,
         )
     elif require_physiological_data:
         raise FileNotFoundError(f"Missing physiological data for {patient_id}.")

@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from src.common.channel_utils import find_matching_label, get_cached_channel_table, normalize_channel_label, split_channel_aliases
+from src.common.caisr import expand_stages_to_samples, p_nrem_at_time, weighted_nrem_minutes
 from src.common.signal_utils import resample_signal
 from .lib import eeg_features
 
@@ -11,15 +12,8 @@ EEG_CHANNEL_SPECS = {
     'F4-M1': {'direct': 'f4-m1', 'positive': 'f4', 'reference': 'm1'},
 }
 
-# --- REDUCED FEATURE SPACE (11 metrics x 4 channels = 44 features) ---
-CORE_METRICS = [
-    # Slow Wave Activity (SWA)
-    'TotalSW',
-    'SWdensity',
-    'SWp2p_mean',
-    'SWnegSlope_mean',
-    'SWduration_mean',
-    # Spectral Slowing & Ratios
+# Segment-level background EEG metrics: aggregated later by the pipeline.
+BACKGROUND_METRICS = [
     'Relative_Delta_Power',
     'Theta_Alpha_Ratio',
     'Theta_Beta_Ratio',
@@ -28,17 +22,27 @@ CORE_METRICS = [
     'Hjorth_Complexity',
     'variability_Delta',
 ]
-
-EEG_FEATURE_SPECS = [
+SLOW_WAVE_METRICS = [
+    'NREM_SW_density', 'NREM_SW_p2p_median', 'NREM_SW_p2p_IQR',
+    'NREM_SW_neg_slope_median', 'NREM_SW_neg_slope_IQR',
+    'NREM_SW_neg_half_duration_median', 'NREM_SW_neg_half_duration_IQR',
+]
+EEG_BACKGROUND_FEATURE_SPECS = [
     (channel_name, feature_name)
     for channel_name in EEG_CHANNEL_SPECS
-    for feature_name in CORE_METRICS
+    for feature_name in BACKGROUND_METRICS
 ]
-
-EEG_SEGMENT_FEATURE_NAMES = [f'{channel}_{metric}' for channel, metric in EEG_FEATURE_SPECS]
+EEG_SEGMENT_FEATURE_NAMES = [f'{channel}_{metric}' for channel, metric in EEG_BACKGROUND_FEATURE_SPECS]
 EEG_SEGMENT_FEATURE_LENGTH = len(EEG_SEGMENT_FEATURE_NAMES)
-EEG_FEATURE_NAMES = EEG_SEGMENT_FEATURE_NAMES
-EEG_FEATURE_LENGTH = EEG_SEGMENT_FEATURE_LENGTH
+EEG_BACKGROUND_AGGREGATED_FEATURE_NAMES = [
+    f'{name}_{aggregation}' for name in EEG_SEGMENT_FEATURE_NAMES
+    for aggregation in ('Max', 'Min', 'Median', 'IQR')
+]
+EEG_SLOW_WAVE_FEATURE_NAMES = [
+    f'{channel}_{metric}' for channel in EEG_CHANNEL_SPECS for metric in SLOW_WAVE_METRICS
+]
+EEG_FEATURE_NAMES = tuple((*EEG_BACKGROUND_AGGREGATED_FEATURE_NAMES, *EEG_SLOW_WAVE_FEATURE_NAMES))
+EEG_FEATURE_LENGTH = len(EEG_FEATURE_NAMES)
 EEG_ALIASES_CACHE = {}
 
 
@@ -145,20 +149,6 @@ def _extract_channel_metrics(signal, fs):
         for name, value in patient_profile.replace([np.inf, -np.inf], np.nan).items()
     }
 
-    try:
-        slow_wave_features = eeg_features.get_SW_features(detector_signal, fs)
-    except Exception:
-        slow_wave_features = {
-            feature_name: np.nan
-            for feature_name in [
-                'TotalSW', 'SWdensity', 'SWp2p_mean', 
-                'SWnegSlope_mean', 'SWduration_mean'
-            ]
-        }
-
-    for feature_name, value in slow_wave_features.items():
-        metrics[feature_name] = float(np.nan if pd.isna(value) else value)
-
     for complexity_name in ('Hjorth_Mobility', 'Hjorth_Complexity'):
         if complexity_name in complexities:
             value = complexities[complexity_name].replace([np.inf, -np.inf], np.nan).std()
@@ -186,7 +176,7 @@ def processEEG(physiological_data, physiological_fs, csv_path):
         return np.full(EEG_SEGMENT_FEATURE_LENGTH, np.nan, dtype=np.float32)
 
     values = []
-    for channel_name, metric_name in EEG_FEATURE_SPECS:
+    for channel_name, metric_name in EEG_BACKGROUND_FEATURE_SPECS:
         channel_metrics = channel_profiles.get(channel_name)
         if channel_metrics is None:
             values.append(np.nan)
@@ -194,6 +184,64 @@ def processEEG(physiological_data, physiological_fs, csv_path):
         values.append(float(channel_metrics.get(metric_name, np.nan)))
 
     return np.asarray(values, dtype=np.float32)
+
+
+def _weighted_quantile(values, weights, quantile):
+    values, weights = np.asarray(values, dtype=float), np.asarray(weights, dtype=float)
+    valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+    if not np.any(valid):
+        return np.nan
+    values, weights = values[valid], weights[valid]
+    order = np.argsort(values)
+    values, weights = values[order], weights[order]
+    return float(values[np.searchsorted(np.cumsum(weights), quantile * np.sum(weights), side='left')])
+
+
+def extract_record_slow_wave_features(physiological_data, physiological_fs, csv_path, annotation):
+    """Extract NREM-aware record-level slow-wave features for four EEG channels."""
+    from src.pipeline.config import SEGMENT_DURATION_SECONDS, SEGMENT_STRIDE_SECONDS
+    if not annotation.get('available'):
+        return np.full(len(EEG_SLOW_WAVE_FEATURE_NAMES), np.nan, dtype=np.float32)
+    aliases = _get_eeg_aliases(csv_path)
+    result = []
+    for channel_name in EEG_CHANNEL_SPECS:
+        signal, fs = _get_channel_signal(channel_name, physiological_data, physiological_fs, aliases)
+        if signal is None or fs is None:
+            result.extend([np.nan] * len(SLOW_WAVE_METRICS)); continue
+        event_weights, p2p, slopes, durations = [], [], [], []
+        exposure = 0.0
+        duration = len(signal) / float(fs)
+        for start in np.arange(0.0, duration - SEGMENT_DURATION_SECONDS + 1e-9, SEGMENT_STRIDE_SECONDS):
+            end = start + SEGMENT_DURATION_SECONDS
+            raw = signal[int(round(start * fs)):int(round(end * fs))]
+            prepared = prepare_slow_wave_detector_input(raw, fs)
+            if prepared is None: continue
+            detector_signal, detector_fs = prepared
+            try:
+                detection = eeg_features.detect_slow_waves(
+                    detector_signal, detector_fs,
+                    sleep_stages=expand_stages_to_samples(annotation, start, len(detector_signal), detector_fs),
+                    allowed_stages=(1, 2))
+            except Exception:
+                continue
+            exposure += weighted_nrem_minutes(annotation, start, end)
+            for event in detection['events']:
+                trough = start + float(np.asarray(event['Ref_PeakInd']).squeeze()) / detector_fs
+                weight = p_nrem_at_time(annotation, trough)
+                event_weights.append(weight)
+                p2p.append(float(np.asarray(event['Ref_P2PAmp']).squeeze()))
+                slopes.append(float(np.asarray(event['Ref_NegSlope']).squeeze()))
+                durations.append((float(np.asarray(event['Ref_UpInd']).squeeze()) -
+                                  float(np.asarray(event['Ref_DownInd']).squeeze())) / detector_fs)
+        valid_weights = np.asarray(event_weights, dtype=float)
+        count = float(np.sum(valid_weights[np.isfinite(valid_weights)]))
+        density = count / exposure if exposure > 0 else np.nan
+        q = lambda values, level: _weighted_quantile(values, valid_weights, level)
+        p25, p50, p75 = q(p2p, .25), q(p2p, .5), q(p2p, .75)
+        s25, s50, s75 = q(slopes, .25), q(slopes, .5), q(slopes, .75)
+        d25, d50, d75 = q(durations, .25), q(durations, .5), q(durations, .75)
+        result.extend([density, p50, p75 - p25, s50, s75 - s25, d50, d75 - d25])
+    return np.asarray(result, dtype=np.float32)
 
 
 _normalize_label = normalize_channel_label

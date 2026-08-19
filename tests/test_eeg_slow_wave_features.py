@@ -170,7 +170,7 @@ class SlowWaveFeatureTests(unittest.TestCase):
         self.assertEqual(features['SWdensity'], 1.0)
         self.assertEqual(features['SWp2p_mean'], 125.0)
 
-    def test_sw_failure_does_not_discard_other_channel_metrics(self):
+    def test_background_metrics_do_not_depend_on_slow_wave_extraction(self):
         fs = 200
         time = np.arange(fs * 30) / fs
         signal = (
@@ -178,42 +178,27 @@ class SlowWaveFeatureTests(unittest.TestCase):
             + 5.0 * np.sin(2 * np.pi * time)
         )
 
-        with patch.object(
-            eeg_features,
-            'get_SW_features',
-            side_effect=RuntimeError('detector failed'),
-        ):
+        with patch.object(eeg_features, 'get_SW_features', side_effect=RuntimeError('unused')):
             metrics = eeg_processing._extract_channel_metrics(signal, fs)
 
         self.assertIsNotNone(metrics)
         self.assertTrue(np.isfinite(metrics['Relative_Delta_Power']))
-        for name in eeg_features.SLOW_WAVE_FEATURE_NAMES:
-            self.assertTrue(np.isnan(metrics[name]), name)
 
-    def test_production_sw_input_is_sanitized_resampled_not_spectral_normalized(self):
+    def test_shared_sw_preparation_is_sanitized_resampled_not_spectral_normalized(self):
         fs = 200
         time = np.arange(fs * 30) / fs
         raw = 20.0 * np.sin(2 * np.pi * time) + 3.0 * np.sin(2 * np.pi * 10 * time)
         raw[[0, 1, 2]] = [np.nan, np.inf, -np.inf]
-        captured = {}
-
-        def capture_detector_input(signal, detector_fs):
-            captured['signal'] = np.asarray(signal).copy()
-            captured['fs'] = detector_fs
-            return {name: 0.0 for name in eeg_features.SLOW_WAVE_FEATURE_NAMES}
-
-        with patch.object(eeg_features, 'get_SW_features', side_effect=capture_detector_input):
-            metrics = eeg_processing._extract_channel_metrics(raw, fs)
+        detector_signal, detector_fs = eeg_processing.prepare_slow_wave_detector_input(raw, fs)
 
         expected = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
-        np.testing.assert_array_equal(captured['signal'], expected)
-        self.assertEqual(captured['fs'], 200)
-        self.assertIsNotNone(metrics)
+        np.testing.assert_array_equal(detector_signal, expected)
+        self.assertEqual(detector_fs, 200)
 
         spectral = eeg_features.butter_bandpass_filter(
             expected, lowcut=.3, highcut=35, fs=200, order=4)
         normalized = (spectral - np.mean(spectral)) / np.std(spectral)
-        self.assertFalse(np.allclose(captured['signal'], normalized))
+        self.assertFalse(np.allclose(detector_signal, normalized))
 
     def test_shared_preparation_preserves_process_eeg_features(self):
         fs = 200
@@ -250,9 +235,9 @@ class SlowWaveFeatureTests(unittest.TestCase):
 
         np.testing.assert_allclose(actual, legacy, rtol=0, atol=0, equal_nan=True)
 
-    def test_all_slow_wave_features_are_exposed_for_each_eeg_channel(self):
+    def test_final_eeg_schema_contains_record_level_slow_wave_features(self):
         for channel_name in eeg_processing.EEG_CHANNEL_SPECS:
-            for feature_name in eeg_features.SLOW_WAVE_FEATURE_NAMES:
+            for feature_name in eeg_processing.SLOW_WAVE_METRICS:
                 self.assertIn(
                     f'{channel_name}_{feature_name}',
                     eeg_processing.EEG_FEATURE_NAMES,
