@@ -268,31 +268,45 @@ def _get_eeg_aliases(csv_path):
     return eeg_aliases
 
 
-def _get_channel_signal(channel_name, physiological_data, physiological_fs, eeg_aliases):
+def get_eeg_channel_source_labels(channel_name, available_labels, physiological_fs, eeg_aliases):
+    """Return the EDF labels selected by the production channel rules."""
     channel_spec = EEG_CHANNEL_SPECS[channel_name]
+    label_lookup = dict.fromkeys(available_labels)
     direct_aliases = eeg_aliases.get(normalize_channel_label(channel_spec['direct']), set())
-    direct_label = find_matching_label(physiological_data, direct_aliases)
+    direct_label = find_matching_label(label_lookup, direct_aliases)
     if direct_label is not None and direct_label in physiological_fs:
-        return np.asarray(physiological_data[direct_label], dtype=float), physiological_fs[direct_label]
+        return (direct_label,)
 
     positive_aliases = eeg_aliases.get(normalize_channel_label(channel_spec['positive']), set())
     reference_aliases = eeg_aliases.get(normalize_channel_label(channel_spec['reference']), set())
-    positive_label = find_matching_label(physiological_data, positive_aliases)
-    reference_label = find_matching_label(physiological_data, reference_aliases)
+    positive_label = find_matching_label(label_lookup, positive_aliases)
+    reference_label = find_matching_label(label_lookup, reference_aliases)
     if positive_label is None or reference_label is None:
-        return None, None
+        return None
     if positive_label not in physiological_fs or reference_label not in physiological_fs:
-        return None, None
+        return None
 
     positive_fs = physiological_fs[positive_label]
     reference_fs = physiological_fs[reference_label]
     if positive_fs != reference_fs:
-        return None, None
+        return None
+    return positive_label, reference_label
 
+
+def _get_channel_signal(channel_name, physiological_data, physiological_fs, eeg_aliases):
+    source_labels = get_eeg_channel_source_labels(
+        channel_name, physiological_data.keys(), physiological_fs, eeg_aliases)
+    if source_labels is None:
+        return None, None
+    if len(source_labels) == 1:
+        label = source_labels[0]
+        return np.asarray(physiological_data[label], dtype=float), physiological_fs[label]
+
+    positive_label, reference_label = source_labels
     return (
         np.asarray(physiological_data[positive_label], dtype=float)
         - np.asarray(physiological_data[reference_label], dtype=float),
-        positive_fs,
+        physiological_fs[positive_label],
     )
 
 

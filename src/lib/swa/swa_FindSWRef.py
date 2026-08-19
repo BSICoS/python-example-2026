@@ -49,6 +49,9 @@ def swa_FindSWRef(Data, Info, SW=None):
     if 'Recording' not in Info:
         Info['Recording'] = {}
     Info['Recording']['Data_Deviation'] = np.zeros(number_ref_waves)
+    # Expose the value calculated by the detector to diagnostic callers. This
+    # is metadata only; detection still uses the local threshold below.
+    Info['Recording']['Slope_Threshold'] = np.full(number_ref_waves, np.nan)
     
     # Asegurar que el umbral absoluto tenga el tamaño adecuado si es un solo valor
     if p.get('Ref_AmplitudeCriteria') == 'absolute':
@@ -134,6 +137,7 @@ def swa_FindSWRef(Data, Info, SW=None):
             # Umbral de pendiente (percentil)
             pos_slopes = slopeData[slopeData > 0]
             slopeThresh = np.percentile(pos_slopes, p['Ref_SlopeMin'] * 100) if len(pos_slopes) > 0 else 0
+            Info['Recording']['Slope_Threshold'][ref_wave] = slopeThresh
             
             # Alinear DZC y UZC
             if len(DZC) > 0 and len(UZC) > 0 and DZC[0] >= UZC[0]:

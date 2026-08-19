@@ -372,8 +372,8 @@ def summarize_slow_waves(slow_waves, fs, signal_duration_seconds):
     return features
 
 
-def get_SW_features(signal, fs, verbose=False):
-    """Detect slow waves with ``swa`` and return fixed-length scalar features."""
+def detect_slow_waves(signal, fs, verbose=False):
+    """Run the production slow-wave detector and expose its events and metadata."""
     signal = np.asarray(signal, dtype=float).reshape(-1)
     if fs <= 0 or not np.isfinite(fs):
         raise ValueError('fs must be a positive finite sampling frequency.')
@@ -401,11 +401,22 @@ def get_SW_features(signal, fs, verbose=False):
             data, info, slow_waves, flag_progress=verbose
         )
 
+    return {
+        'events': slow_waves,
+        'info': info,
+        'filtered_signal': np.asarray(
+            data.get('Filtered', data['SWRef'])[0], dtype=float),
+        'sampling_frequency': float(fs),
+        'signal_duration_seconds': signal.size / float(fs),
+    }
+
+
+def get_SW_features(signal, fs, verbose=False):
+    """Detect slow waves with ``swa`` and return fixed-length scalar features."""
+    detection = detect_slow_waves(signal, fs, verbose=verbose)
     return summarize_slow_waves(
-        slow_waves,
-        fs=float(fs),
-        signal_duration_seconds=signal.size / float(fs),
-    )
+        detection['events'], fs=detection['sampling_frequency'],
+        signal_duration_seconds=detection['signal_duration_seconds'])
 
 
 def get_patient_profile(df_features):
