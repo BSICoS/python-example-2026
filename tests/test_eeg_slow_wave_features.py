@@ -147,6 +147,66 @@ class SlowWaveFeatureTests(unittest.TestCase):
         for name in eeg_features.SLOW_WAVE_FEATURE_NAMES:
             self.assertTrue(np.isnan(metrics[name]), name)
 
+    def test_production_sw_input_is_sanitized_resampled_not_spectral_normalized(self):
+        fs = 200
+        time = np.arange(fs * 30) / fs
+        raw = 20.0 * np.sin(2 * np.pi * time) + 3.0 * np.sin(2 * np.pi * 10 * time)
+        raw[[0, 1, 2]] = [np.nan, np.inf, -np.inf]
+        captured = {}
+
+        def capture_detector_input(signal, detector_fs):
+            captured['signal'] = np.asarray(signal).copy()
+            captured['fs'] = detector_fs
+            return {name: 0.0 for name in eeg_features.SLOW_WAVE_FEATURE_NAMES}
+
+        with patch.object(eeg_features, 'get_SW_features', side_effect=capture_detector_input):
+            metrics = eeg_processing._extract_channel_metrics(raw, fs)
+
+        expected = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
+        np.testing.assert_array_equal(captured['signal'], expected)
+        self.assertEqual(captured['fs'], 200)
+        self.assertIsNotNone(metrics)
+
+        spectral = eeg_features.butter_bandpass_filter(
+            expected, lowcut=.3, highcut=35, fs=200, order=4)
+        normalized = (spectral - np.mean(spectral)) / np.std(spectral)
+        self.assertFalse(np.allclose(captured['signal'], normalized))
+
+    def test_shared_preparation_preserves_process_eeg_features(self):
+        fs = 200
+        time = np.arange(fs * 30) / fs
+        physiological_data = {
+            channel.lower(): (10 + index) * np.sin(2 * np.pi * time)
+            + 2 * np.sin(2 * np.pi * 10 * time)
+            for index, channel in enumerate(eeg_processing.EEG_CHANNEL_SPECS)
+        }
+        physiological_fs = {channel: fs for channel in physiological_data}
+        fixed_sw = {
+            'TotalSW': 3.0, 'SWdensity': 6.0, 'SWp2p_mean': 2.0,
+            'SWnegSlope_mean': -1.0, 'SWduration_mean': .5,
+        }
+
+        def legacy_prepare(signal, input_fs):
+            prepared = np.nan_to_num(
+                np.asarray(signal, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+            if prepared.size < max(int(input_fs * 30), 2):
+                return None
+            if input_fs != 200:
+                prepared, input_fs = eeg_processing.resample_signal(prepared, input_fs, 200)
+            return prepared, input_fs
+
+        with patch.object(eeg_features, 'get_SW_features', return_value=fixed_sw):
+            actual = eeg_processing.processEEG(
+                physiological_data, physiological_fs, 'channel_table.csv')
+            with patch.object(
+                eeg_processing, 'prepare_slow_wave_detector_input',
+                side_effect=legacy_prepare,
+            ):
+                legacy = eeg_processing.processEEG(
+                    physiological_data, physiological_fs, 'channel_table.csv')
+
+        np.testing.assert_allclose(actual, legacy, rtol=0, atol=0, equal_nan=True)
+
     def test_all_slow_wave_features_are_exposed_for_each_eeg_channel(self):
         for channel_name in eeg_processing.EEG_CHANNEL_SPECS:
             for feature_name in eeg_features.SLOW_WAVE_FEATURE_NAMES:

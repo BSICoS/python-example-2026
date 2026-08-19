@@ -310,7 +310,8 @@ def _get_channel_signal(channel_name, physiological_data, physiological_fs, eeg_
     )
 
 
-def _extract_channel_metrics(signal, fs):
+def prepare_slow_wave_detector_input(signal, fs):
+    """Apply the exact sanitizing and resampling used before SW detection."""
     signal = np.nan_to_num(np.asarray(signal, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
     if signal.size < max(int(fs * 30), 2):
         return None
@@ -318,7 +319,16 @@ def _extract_channel_metrics(signal, fs):
     if fs != 200:
         signal, fs = resample_signal(signal, fs, 200)
 
-    filtered = eeg_features.butter_bandpass_filter(signal, lowcut=0.3, highcut=35, fs=fs, order=4)
+    return signal, fs
+
+
+def _extract_channel_metrics(signal, fs):
+    prepared = prepare_slow_wave_detector_input(signal, fs)
+    if prepared is None:
+        return None
+    detector_signal, fs = prepared
+
+    filtered = eeg_features.butter_bandpass_filter(detector_signal, lowcut=0.3, highcut=35, fs=fs, order=4)
     signal_std = np.std(filtered)
     if signal_std == 0 or not np.isfinite(signal_std):
         return None
@@ -342,7 +352,7 @@ def _extract_channel_metrics(signal, fs):
     }
 
     try:
-        slow_wave_features = eeg_features.get_SW_features(signal, fs)
+        slow_wave_features = eeg_features.get_SW_features(detector_signal, fs)
     except Exception:
         slow_wave_features = {
             feature_name: np.nan

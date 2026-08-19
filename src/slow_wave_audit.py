@@ -11,11 +11,11 @@ import pandas as pd
 from tqdm import tqdm
 
 from helper_code import HEADERS
-from src.common.signal_utils import resample_signal
 from src.eeg_processing import (
     EEG_CHANNEL_SPECS,
     _get_eeg_aliases,
     get_eeg_channel_source_labels,
+    prepare_slow_wave_detector_input,
 )
 from src.lib import eeg_features
 from src.pipeline.config import (
@@ -30,11 +30,21 @@ PROBABILITY_LABELS = (
     'caisr_prob_n3', 'caisr_prob_n2', 'caisr_prob_n1',
     'caisr_prob_r', 'caisr_prob_w',
 )
+SOFT_STAGE_PROBABILITIES = {
+    'N3': 'caisr_prob_n3',
+    'N2': 'caisr_prob_n2',
+    'N1': 'caisr_prob_n1',
+    'REM': 'caisr_prob_r',
+    'Wake': 'caisr_prob_w',
+}
+SOFT_STAGE_ORDER = ('N3', 'N2', 'N1', 'REM', 'Wake', 'NREM')
+WEIGHT_COLUMNS = tuple(f'weight_{stage}' for stage in SOFT_STAGE_ORDER)
 EVENT_COLUMNS = (
     'patient_id', 'bids_folder', 'site_id', 'session_id', 'channel',
     'segment_start_seconds', 'segment_end_seconds', 'down_crossing_seconds',
     'trough_seconds', 'up_crossing_seconds', 'stage_at_trough',
-    *PROBABILITY_LABELS, 'negative_peak_amplitude', 'peak_to_peak_amplitude',
+    *PROBABILITY_LABELS, *WEIGHT_COLUMNS,
+    'negative_peak_amplitude', 'peak_to_peak_amplitude',
     'negative_slope', 'positive_slope', 'negative_half_wave_duration_seconds',
     'detector_amplitude_threshold', 'detector_data_deviation',
     'detector_slope_threshold', 'source_labels', 'sampling_frequency',
@@ -45,6 +55,9 @@ SEGMENT_COLUMNS = (
     'fraction_N2', 'fraction_N3', 'fraction_REM', 'fraction_unavailable',
     'TotalSW', 'SWdensity', 'detector_amplitude_threshold',
     'detector_data_deviation', 'detector_slope_threshold',
+    *tuple(f'weighted_minutes_{stage}' for stage in SOFT_STAGE_ORDER),
+    *tuple(f'weighted_SW_count_{stage}' for stage in ('N3', 'N2', 'NREM', 'REM', 'Wake')),
+    *tuple(f'weighted_SW_per_min_{stage}' for stage in ('N3', 'N2', 'NREM', 'REM', 'Wake')),
 )
 
 
@@ -99,6 +112,7 @@ def annotation_at_time(annotation, time_seconds):
     """Return CAISR stage/probabilities for the epoch containing an event time."""
     result = {'stage_at_trough': 'unavailable'}
     result.update({label: np.nan for label in PROBABILITY_LABELS})
+    result.update({label: np.nan for label in WEIGHT_COLUMNS})
     if not annotation['available'] or time_seconds < 0:
         return result
     index = int(np.floor(float(time_seconds) * annotation['fs']))
@@ -106,11 +120,16 @@ def annotation_at_time(annotation, time_seconds):
         return result
     stage_name = translate_stage_code(annotation['stage'][index])
     result['stage_at_trough'] = stage_name
-    if stage_name == 'unavailable':
-        return result
     for label, values in annotation['probabilities'].items():
-        if index < values.size and np.isfinite(values[index]) and values[index] != 9:
-            result[label] = float(values[index])
+        if index < values.size:
+            probability = float(values[index])
+            if np.isfinite(probability) and 0.0 <= probability <= 1.0:
+                result[label] = probability
+    for stage, label in SOFT_STAGE_PROBABILITIES.items():
+        result[f'weight_{stage}'] = result[label]
+    n2 = result['weight_N2']
+    n3 = result['weight_N3']
+    result['weight_NREM'] = n2 + n3 if np.isfinite(n2) and np.isfinite(n3) else np.nan
     return result
 
 
@@ -137,6 +156,77 @@ def stage_minutes_in_interval(annotation, start_seconds, end_seconds):
     return minutes
 
 
+def weighted_stage_minutes_in_interval(annotation, start_seconds, end_seconds):
+    """Integrate CAISR probabilities over an interval, including partial epochs."""
+    minutes = {stage: 0.0 for stage in SOFT_STAGE_ORDER}
+    if end_seconds <= start_seconds or not annotation['available']:
+        return minutes
+    epoch_seconds = 1.0 / annotation['fs']
+    first = max(0, int(np.floor(start_seconds / epoch_seconds)))
+    last = min(annotation['stage'].size, int(np.ceil(end_seconds / epoch_seconds)))
+    for index in range(first, last):
+        overlap_minutes = max(
+            0.0,
+            min(end_seconds, (index + 1) * epoch_seconds)
+            - max(start_seconds, index * epoch_seconds),
+        ) / 60.0
+        if overlap_minutes == 0:
+            continue
+        epoch_probabilities = {}
+        for stage, label in SOFT_STAGE_PROBABILITIES.items():
+            values = annotation['probabilities'].get(label, np.array([], dtype=float))
+            probability = float(values[index]) if index < values.size else np.nan
+            if np.isfinite(probability) and 0.0 <= probability <= 1.0:
+                minutes[stage] += probability * overlap_minutes
+                epoch_probabilities[stage] = probability
+        if 'N2' in epoch_probabilities and 'N3' in epoch_probabilities:
+            minutes['NREM'] += (
+                epoch_probabilities['N2'] + epoch_probabilities['N3']
+            ) * overlap_minutes
+    return minutes
+
+
+def caisr_uncertainty_metrics(annotation):
+    """Summarize CAISR confidence without changing or renormalizing probabilities."""
+    missing = {
+        'caisr_probability_epochs': 0,
+        'median_max_stage_probability': np.nan,
+        'P10_max_stage_probability': np.nan,
+        'fraction_epochs_max_probability_below_0_5': np.nan,
+        'fraction_epochs_max_probability_below_0_7': np.nan,
+        'mean_stage_entropy': np.nan,
+    }
+    if not annotation['available']:
+        return missing
+    columns = []
+    for label in PROBABILITY_LABELS:
+        values = annotation['probabilities'].get(label)
+        if values is None:
+            return missing
+        columns.append(np.asarray(values, dtype=float))
+    if not columns:
+        return missing
+    length = min(len(values) for values in columns)
+    probabilities = np.column_stack([values[:length] for values in columns])
+    valid = np.all(np.isfinite(probabilities) & (probabilities >= 0) & (probabilities <= 1), axis=1)
+    probabilities = probabilities[valid]
+    if probabilities.size == 0:
+        return missing
+    maxima = np.max(probabilities, axis=1)
+    log_probabilities = np.zeros_like(probabilities)
+    positive = probabilities > 0
+    log_probabilities[positive] = np.log(probabilities[positive])
+    entropy_terms = probabilities * log_probabilities
+    return {
+        'caisr_probability_epochs': int(len(probabilities)),
+        'median_max_stage_probability': float(np.median(maxima)),
+        'P10_max_stage_probability': float(np.percentile(maxima, 10)),
+        'fraction_epochs_max_probability_below_0_5': float(np.mean(maxima < 0.5)),
+        'fraction_epochs_max_probability_below_0_7': float(np.mean(maxima < 0.7)),
+        'mean_stage_entropy': float(np.mean(-np.sum(entropy_terms, axis=1))),
+    }
+
+
 def _safe_rate(count, minutes):
     return float(count / minutes) if minutes > 0 else np.nan
 
@@ -145,6 +235,33 @@ def _scalar(value):
     values = np.asarray(value, dtype=float).reshape(-1)
     finite = values[np.isfinite(values)]
     return float(finite[0]) if finite.size else np.nan
+
+
+def physical_signal_statistics(signal):
+    """Return robust statistics in the EDF signal's original physical domain."""
+    finite = np.asarray(signal, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return {name: np.nan for name in
+                ('signal_P1', 'signal_median', 'signal_P99', 'signal_P99_minus_P1')}
+    p1, median, p99 = np.percentile(finite, [1, 50, 99])
+    return {'signal_P1': float(p1), 'signal_median': float(median),
+            'signal_P99': float(p99), 'signal_P99_minus_P1': float(p99 - p1)}
+
+
+def prepare_audit_slow_wave_detector_input(signal, fs):
+    """Delegate audit preparation to the exact production SW input function."""
+    return prepare_slow_wave_detector_input(signal, fs)
+
+
+def detect_audited_slow_waves(signal, fs):
+    """Prepare and run the detector while retaining its exact input signal."""
+    prepared = prepare_audit_slow_wave_detector_input(signal, fs)
+    if prepared is None:
+        return None
+    detector_signal, detector_fs = prepared
+    detection = eeg_features.detect_slow_waves(detector_signal, detector_fs)
+    return detection, detector_signal, detector_fs
 
 
 def _event_window(filtered_signal, trough_index, fs, half_seconds=2.0):
@@ -162,6 +279,7 @@ class TriggeredWaveforms:
     def __init__(self, max_quantile_samples=20000):
         self.max_quantile_samples = int(max_quantile_samples)
         self.groups = {}
+        self.weighted_nrem_groups = {}
         self.rng = np.random.default_rng(20260819)
 
     def add(self, key, waveform):
@@ -176,8 +294,21 @@ class TriggeredWaveforms:
             if replacement < self.max_quantile_samples:
                 group['sample'][replacement] = waveform.copy()
 
+    def add_weighted_nrem(self, key, waveform, weight):
+        """Accumulate an NREM probability-weighted detector-input waveform."""
+        if not np.isfinite(weight) or weight <= 0:
+            return
+        waveform = np.asarray(waveform, dtype=float)
+        group = self.weighted_nrem_groups.setdefault(
+            key, {'weight': 0.0, 'weighted_sum': np.zeros_like(waveform)})
+        group['weight'] += float(weight)
+        group['weighted_sum'] += float(weight) * waveform
+
     def save(self, path, fs=200.0):
-        payload = {'time_seconds': np.arange(-int(2 * fs), int(2 * fs) + 1) / fs}
+        payload = {
+            'time_seconds': np.arange(-int(2 * fs), int(2 * fs) + 1) / fs,
+            'waveform_domain': np.asarray('sanitized_resampled_eeg'),
+        }
         for (site, channel, stage), group in sorted(self.groups.items()):
             prefix = f'{site}__{channel.replace("-", "_")}__{stage}'
             sample = np.asarray(group['sample'], dtype=float)
@@ -187,6 +318,10 @@ class TriggeredWaveforms:
             payload[f'{prefix}__p75'] = np.percentile(sample, 75, axis=0)
             payload[f'{prefix}__n_events'] = np.asarray(group['n'])
             payload[f'{prefix}__quantile_sample_size'] = np.asarray(len(sample))
+        for (site, channel), group in sorted(self.weighted_nrem_groups.items()):
+            prefix = f'{site}__{channel.replace("-", "_")}__weighted_NREM'
+            payload[f'{prefix}__mean_waveform'] = group['weighted_sum'] / group['weight']
+            payload[f'{prefix}__total_effective_weight'] = np.asarray(group['weight'])
         np.savez_compressed(path, **payload)
 
 
@@ -198,6 +333,29 @@ def _distribution(values):
     p10, p25, median, p75, p90 = np.percentile(values, [10, 25, 50, 75, 90])
     return {'N': int(values.size), 'median': float(median), 'IQR': float(p75 - p25),
             'P10': float(p10), 'P90': float(p90)}
+
+
+def weighted_event_metrics(events, weighted_minutes):
+    """Calculate probability-weighted event counts and densities by soft stage."""
+    metrics = {}
+    for stage in ('N3', 'N2', 'NREM', 'REM', 'Wake'):
+        weights = np.asarray(
+            [event.get(f'weight_{stage}', np.nan) for event in events], dtype=float)
+        count = float(np.sum(weights[np.isfinite(weights)]))
+        minutes = float(weighted_minutes.get(stage, 0.0))
+        metrics[f'weighted_SW_count_{stage}'] = count
+        metrics[f'weighted_SW_per_min_{stage}'] = _safe_rate(count, minutes)
+    return metrics
+
+
+def _weighted_mean(values, weights):
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    valid = np.isfinite(values) & np.isfinite(weights) & (weights >= 0)
+    total_weight = float(np.sum(weights[valid]))
+    if total_weight <= 0:
+        return np.nan, 0.0
+    return float(np.sum(values[valid] * weights[valid]) / total_weight), total_weight
 
 
 def _find_annotation_path(data_folder, site_id, bids_folder, session_id):
@@ -236,11 +394,16 @@ def _record_duration(edf):
 
 def _subject_rows_for_channel(record, channel, annotation, duration, intervals, events):
     total = stage_minutes_in_interval(annotation, 0.0, duration)
+    total_weighted = weighted_stage_minutes_in_interval(annotation, 0.0, duration)
     analyzed = {name: 0.0 for name in STAGE_ORDER}
+    analyzed_weighted = {name: 0.0 for name in SOFT_STAGE_ORDER}
     for start, end in intervals:
         exposure = stage_minutes_in_interval(annotation, start, end)
+        weighted_exposure = weighted_stage_minutes_in_interval(annotation, start, end)
         for name in STAGE_ORDER:
             analyzed[name] += exposure[name]
+        for name in SOFT_STAGE_ORDER:
+            analyzed_weighted[name] += weighted_exposure[name]
     counts = {name: 0 for name in STAGE_ORDER}
     for event in events:
         counts[event['stage_at_trough']] += 1
@@ -253,10 +416,15 @@ def _subject_rows_for_channel(record, channel, annotation, duration, intervals, 
         'analyzed_minutes': sum(analyzed.values()),
         'analyzed_N2_minutes': analyzed['N2'], 'analyzed_N3_minutes': analyzed['N3'],
         'analyzed_N2_N3_minutes': analyzed['N2'] + analyzed['N3'],
+        'total_weighted_NREM_minutes': total_weighted['NREM'],
+        'analyzed_weighted_NREM_minutes': analyzed_weighted['NREM'],
     }
     row['analyzed_N2_N3_fraction'] = (
         row['analyzed_N2_N3_minutes'] / row['total_N2_N3_minutes']
         if row['total_N2_N3_minutes'] > 0 else np.nan)
+    row['analyzed_weighted_NREM_fraction'] = (
+        row['analyzed_weighted_NREM_minutes'] / row['total_weighted_NREM_minutes']
+        if row['total_weighted_NREM_minutes'] > 0 else np.nan)
     for name in STAGE_ORDER:
         row[f'number_in_{name}'] = counts[name]
         row[f'analyzed_minutes_{name}'] = analyzed[name]
@@ -266,6 +434,9 @@ def _subject_rows_for_channel(record, channel, annotation, duration, intervals, 
     row['SW_per_min_N2_N3'] = _safe_rate(counts['N2'] + counts['N3'], analyzed['N2'] + analyzed['N3'])
     row['SW_per_min_REM'] = _safe_rate(counts['REM'], analyzed['REM'])
     row['SW_per_min_Wake'] = _safe_rate(counts['Wake'], analyzed['Wake'])
+    for name in SOFT_STAGE_ORDER:
+        row[f'weighted_minutes_{name}'] = analyzed_weighted[name]
+    row.update(weighted_event_metrics(events, analyzed_weighted))
     return row
 
 
@@ -290,7 +461,29 @@ def _build_stage_summary(events_df, subjects_df):
                 for metric, column in [('SW_per_min', rate_column), *morphology.items()]:
                     values = subject_group[rate_column] if metric == 'SW_per_min' else event_group.get(column, [])
                     rows.append({'site_id': site, 'channel': channel, 'stage': stage,
+                                 'staging_method': 'hard',
                                  'metric': metric, **_distribution(values)})
+            soft_morphology = {
+                'peak_to_peak_amplitude': 'peak_to_peak_amplitude',
+                'negative_slope': 'negative_slope',
+                'positive_slope': 'positive_slope',
+                'negative_half_wave_duration': 'negative_half_wave_duration_seconds',
+            }
+            soft_events = events_df[(events_df.site_id == site) & (events_df.channel == channel)]
+            for stage in ('N2', 'N3', 'NREM', 'REM', 'Wake'):
+                rate_values = subject_group.get(f'weighted_SW_per_min_{stage}', [])
+                rows.append({'site_id': site, 'channel': channel, 'stage': stage,
+                             'staging_method': 'soft', 'metric': 'weighted_SW_per_min',
+                             **_distribution(rate_values)})
+                weights = soft_events.get(f'weight_{stage}', pd.Series(dtype=float))
+                for metric, column in soft_morphology.items():
+                    weighted_mean, total_weight = _weighted_mean(
+                        soft_events.get(column, []), weights)
+                    rows.append({'site_id': site, 'channel': channel, 'stage': stage,
+                                 'staging_method': 'soft', 'metric': metric,
+                                 'N': int(np.sum(np.isfinite(np.asarray(weights, dtype=float)))),
+                                 'total_effective_weight': total_weight,
+                                 'weighted_mean': weighted_mean})
     return pd.DataFrame(rows)
 
 
@@ -313,9 +506,35 @@ def _aggregate_summary(subjects_df, events_df, segments_df, group_columns):
             row[f'SW_per_min_{stage}'] = _safe_rate(count, channel_minutes)
         nrem_count = group.number_in_N2.sum() + group.number_in_N3.sum()
         channel_nrem_minutes = group.analyzed_minutes_N2.sum() + group.analyzed_minutes_N3.sum()
+        row['total_N2_N3_minutes'] = float(
+            record_group.get('total_N2_N3_minutes', pd.Series(dtype=float)).sum())
         row['analyzed_N2_N3_minutes'] = float(
             record_group.analyzed_minutes_N2.sum() + record_group.analyzed_minutes_N3.sum())
+        row['analyzed_N2_N3_fraction'] = _safe_rate(
+            row['analyzed_N2_N3_minutes'], row['total_N2_N3_minutes'])
         row['SW_per_min_N2_N3'] = _safe_rate(nrem_count, channel_nrem_minutes)
+        row['total_weighted_NREM_minutes'] = float(record_group.get(
+            'total_weighted_NREM_minutes', pd.Series(dtype=float)).sum())
+        row['analyzed_weighted_NREM_minutes'] = float(record_group.get(
+            'analyzed_weighted_NREM_minutes', pd.Series(dtype=float)).sum())
+        row['analyzed_weighted_NREM_fraction'] = _safe_rate(
+            row['analyzed_weighted_NREM_minutes'], row['total_weighted_NREM_minutes'])
+        for stage in ('N2', 'N3', 'NREM', 'REM', 'Wake'):
+            weighted_count = float(group.get(
+                f'weighted_SW_count_{stage}', pd.Series(dtype=float)).sum())
+            weighted_minutes = float(group.get(
+                f'weighted_minutes_{stage}', pd.Series(dtype=float)).sum())
+            row[f'weighted_SW_count_{stage}'] = weighted_count
+            row[f'weighted_SW_per_min_{stage}'] = _safe_rate(
+                weighted_count, weighted_minutes)
+        for metric in (
+            'median_max_stage_probability', 'P10_max_stage_probability',
+            'fraction_epochs_max_probability_below_0_5',
+            'fraction_epochs_max_probability_below_0_7', 'mean_stage_entropy',
+        ):
+            values = record_group.get(metric, pd.Series(dtype=float))
+            finite_values = values[np.isfinite(values)]
+            row[metric] = float(np.median(finite_values)) if len(finite_values) else np.nan
         event_group = events_df
         segment_group = segments_df
         for column, value in row.items():
@@ -419,22 +638,40 @@ def _suspicious_cases(subjects_df, events_df, segments_df):
     return pd.DataFrame(rows)
 
 
-def _print_site_summary(site_summary, channel_summary):
+def _print_site_summary(site_summary, channel_summary, units_summary):
     print('\n' + '=' * 60)
     print('SLOW-WAVE AUDIT BY SITE')
     print('=' * 60)
     if site_summary.empty:
         print('No auditable records were found.')
         return
-    display_columns = ['records', 'annotation_coverage', 'analyzed_N2_N3_minutes',
-                       'SW_per_min_N2', 'SW_per_min_N3', 'SW_per_min_N2_N3',
-                       'SW_per_min_Wake', 'SW_per_min_REM', 'median_P2P_amplitude',
-                       'median_duration', 'median_amp_threshold']
-    print(site_summary.set_index('site_id')[display_columns].T.to_string(float_format=lambda x: f'{x:.4g}'))
+    indexed = site_summary.set_index('site_id')
+    overview = ['records', 'annotation_coverage', 'analyzed_N2_N3_fraction',
+                'analyzed_weighted_NREM_fraction']
+    print(indexed[overview].T.to_string(float_format=lambda x: f'{x:.4g}'))
+    print('\nHARD')
+    hard = ['SW_per_min_N2', 'SW_per_min_N3', 'SW_per_min_N2_N3',
+            'SW_per_min_Wake', 'SW_per_min_REM']
+    print(indexed[hard].T.to_string(float_format=lambda x: f'{x:.4g}'))
+    print('\nSOFT')
+    soft = ['weighted_SW_per_min_N2', 'weighted_SW_per_min_N3',
+            'weighted_SW_per_min_NREM', 'weighted_SW_per_min_Wake',
+            'weighted_SW_per_min_REM']
+    print(indexed[soft].T.to_string(float_format=lambda x: f'{x:.4g}'))
     print('\n' + '=' * 60)
     print('SLOW-WAVE AUDIT BY SITE AND CHANNEL')
     print('=' * 60)
     print(channel_summary.to_string(index=False, float_format=lambda x: f'{x:.4g}'))
+    print('\n' + '=' * 60)
+    print('EEG PHYSICAL UNITS BY SITE AND CHANNEL')
+    print('=' * 60)
+    physical_columns = ['site_id', 'channel', 'physical_dimension', 'records',
+                        'sampling_frequency_median', 'signal_P99_minus_P1_median']
+    if units_summary.empty:
+        print('No physical EEG signals were summarized.')
+    else:
+        print(units_summary[physical_columns].to_string(
+            index=False, float_format=lambda x: f'{x:.4g}'))
 
 
 def run_audit(data_folder, output_folder, channel_table=DEFAULT_CSV_PATH, max_records=None):
@@ -445,7 +682,7 @@ def run_audit(data_folder, output_folder, channel_table=DEFAULT_CSV_PATH, max_re
     if max_records is not None:
         demographics = demographics.head(int(max_records))
     eeg_aliases = _get_eeg_aliases(channel_table)
-    event_rows, segment_rows, subject_rows, unit_rows = [], [], [], []
+    event_rows, segment_rows, subject_rows, unit_rows, caisr_rows = [], [], [], [], []
     triggered = TriggeredWaveforms()
 
     for _, demographic in tqdm(demographics.iterrows(), total=len(demographics), desc='Auditing records'):
@@ -457,6 +694,9 @@ def run_audit(data_folder, output_folder, channel_table=DEFAULT_CSV_PATH, max_re
                   'site_id': site, 'session_id': session}
         physiological_path = _find_physiological_path(data_folder, site, bids_folder, session)
         annotation = load_caisr_annotation(_find_annotation_path(data_folder, site, bids_folder, session))
+        uncertainty = caisr_uncertainty_metrics(annotation)
+        subject_record = {**record, **uncertainty}
+        caisr_rows.append(subject_record)
         if not physiological_path.is_file():
             continue
         try:
@@ -468,43 +708,37 @@ def run_audit(data_folder, output_folder, channel_table=DEFAULT_CSV_PATH, max_re
                 if selected is None:
                     continue
                 raw_signal, raw_fs, unit, source_labels = selected
-                finite_raw = raw_signal[np.isfinite(raw_signal)]
-                if finite_raw.size:
-                    p1, median, p99 = np.percentile(finite_raw, [1, 50, 99])
+                physical_statistics = physical_signal_statistics(raw_signal)
+                if np.isfinite(physical_statistics['signal_median']):
                     unit_rows.append({**record, 'channel': channel, 'source_labels': source_labels,
                                       'physical_dimension': unit, 'sampling_frequency': raw_fs,
-                                      'signal_median': median, 'signal_P1': p1, 'signal_P99': p99,
-                                      'signal_P99_minus_P1': p99 - p1})
+                                      **physical_statistics})
                 channel_events = []
                 channel_intervals = []
                 for start, end in intervals:
                     start_index, end_index = int(round(start * raw_fs)), int(round(end * raw_fs))
                     if end_index > raw_signal.size:
                         continue
-                    signal = np.nan_to_num(raw_signal[start_index:end_index], nan=0.0, posinf=0.0, neginf=0.0)
-                    fs = raw_fs
-                    if fs != 200:
-                        signal, fs = resample_signal(signal, fs, 200)
                     try:
-                        detection = eeg_features.detect_slow_waves(signal, fs)
+                        audited_detection = detect_audited_slow_waves(
+                            raw_signal[start_index:end_index], raw_fs)
                     except Exception:
                         continue
+                    if audited_detection is None:
+                        continue
+                    detection, detector_signal, fs = audited_detection
                     info = detection['info']
                     amp_threshold = _scalar(info['Parameters'].get('Ref_AmplitudeAbsolute'))
                     channel_intervals.append((start, end))
                     data_deviation = _scalar(info['Recording'].get('Data_Deviation'))
                     slope_threshold = _scalar(info['Recording'].get('Slope_Threshold'))
                     exposure = stage_minutes_in_interval(annotation, start, end)
+                    weighted_exposure = weighted_stage_minutes_in_interval(
+                        annotation, start, end)
                     fractions = {name: exposure[name] / (SEGMENT_DURATION_SECONDS / 60.0) for name in STAGE_ORDER}
                     aggregates = eeg_features.summarize_slow_waves(
                         detection['events'], fs, SEGMENT_DURATION_SECONDS)
-                    segment_rows.append({**record, 'channel': channel,
-                                         'segment_start_seconds': start, 'segment_end_seconds': end,
-                                         **{f'fraction_{name}': fractions[name] for name in STAGE_ORDER},
-                                         'TotalSW': aggregates['TotalSW'], 'SWdensity': aggregates['SWdensity'],
-                                         'detector_amplitude_threshold': amp_threshold,
-                                         'detector_data_deviation': data_deviation,
-                                         'detector_slope_threshold': slope_threshold})
+                    segment_event_rows = []
                     for event in detection['events']:
                         down = start + _scalar(event.get('Ref_DownInd')) / fs
                         trough = start + _scalar(event.get('Ref_PeakInd')) / fs
@@ -525,13 +759,30 @@ def run_audit(data_folder, output_folder, channel_table=DEFAULT_CSV_PATH, max_re
                                      'source_labels': source_labels, 'sampling_frequency': fs}
                         event_rows.append(event_row)
                         channel_events.append(event_row)
+                        segment_event_rows.append(event_row)
+                        waveform = _event_window(
+                            detector_signal, int(round((trough - start) * fs)), fs)
                         if stage['stage_at_trough'] in ('N2', 'N3'):
-                            waveform = _event_window(detection['filtered_signal'],
-                                                     int(round((trough - start) * fs)), fs)
                             if waveform is not None:
                                 triggered.add((site, channel, stage['stage_at_trough']), waveform)
+                        if waveform is not None:
+                            triggered.add_weighted_nrem(
+                                (site, channel), waveform, event_row['weight_NREM'])
+                    segment_rows.append({
+                        **record, 'channel': channel,
+                        'segment_start_seconds': start, 'segment_end_seconds': end,
+                        **{f'fraction_{name}': fractions[name] for name in STAGE_ORDER},
+                        **{f'weighted_minutes_{name}': weighted_exposure[name]
+                           for name in SOFT_STAGE_ORDER},
+                        **weighted_event_metrics(segment_event_rows, weighted_exposure),
+                        'TotalSW': aggregates['TotalSW'], 'SWdensity': aggregates['SWdensity'],
+                        'detector_amplitude_threshold': amp_threshold,
+                        'detector_data_deviation': data_deviation,
+                        'detector_slope_threshold': slope_threshold,
+                    })
                 subject_rows.append(_subject_rows_for_channel(
-                    record, channel, annotation, duration, channel_intervals, channel_events))
+                    subject_record, channel, annotation, duration,
+                    channel_intervals, channel_events))
         except Exception as error:
             tqdm.write(f'Skipping {bids_folder} session {session}: {error}')
 
@@ -542,17 +793,18 @@ def run_audit(data_folder, output_folder, channel_table=DEFAULT_CSV_PATH, max_re
     channel_summary = _aggregate_summary(subjects_df, events_df, segments_df, ['site_id', 'channel'])
     stage_summary = _build_stage_summary(events_df, subjects_df)
     units_summary = _eeg_units_summary(unit_rows)
+    caisr_summary = pd.DataFrame(caisr_rows)
     suspicious = _suspicious_cases(subjects_df, events_df, segments_df)
     outputs = {
         'events.csv': events_df, 'segments.csv': segments_df, 'subjects.csv': subjects_df,
         'site_summary.csv': site_summary, 'channel_summary.csv': channel_summary,
         'stage_summary.csv': stage_summary, 'eeg_units_summary.csv': units_summary,
-        'suspicious_cases.csv': suspicious,
+        'suspicious_cases.csv': suspicious, 'caisr_summary.csv': caisr_summary,
     }
     for filename, frame in outputs.items():
         frame.to_csv(output_folder / filename, index=False)
     triggered.save(output_folder / 'event_triggered_average.npz')
-    _print_site_summary(site_summary, channel_summary)
+    _print_site_summary(site_summary, channel_summary, units_summary)
     print(f'\nDiagnostic files written to {output_folder.resolve()}')
     return outputs
 
