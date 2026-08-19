@@ -24,7 +24,7 @@ from .features import (
 
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
-ENSEMBLE_MODALITIES = ('resp', 'eeg', 'ecg')
+ENSEMBLE_MODALITIES = ('eeg', 'ecg')
 DEFAULT_KNN_NEIGHBORS = 5
 
 
@@ -198,7 +198,6 @@ def prepare_multimodal_data(dddf, testsize=0.1):
             for column in feature_names
         ])
 
-    resp_mask = modality_mask('resp')
     eeg_mask = modality_mask('eeg')
     ecg_mask = modality_mask('ecg')
 
@@ -208,7 +207,6 @@ def prepare_multimodal_data(dddf, testsize=0.1):
         "X_test": X_test,
         "y_train": y_train,
         "y_test": y_test,
-        "resp": (X_train.loc[:, resp_mask], X_test.loc[:, resp_mask]),
         "eeg":  (X_train.loc[:, eeg_mask],  X_test.loc[:, eeg_mask]),
         "ecg":  (X_train.loc[:, ecg_mask],  X_test.loc[:, ecg_mask]),
         "preprocessor": preprocessor
@@ -225,7 +223,7 @@ def _fit_ensembleJM(data):
     # ===============================
     # 1. Entrenamiento por modalidad
     # ===============================
-    for modality in ['resp', 'eeg', 'ecg']:
+    for modality in ['eeg', 'ecg']:
 
         if modality not in data or data[modality] is None:
             continue
@@ -285,7 +283,7 @@ def _fit_ensemble_with_cv(data, n_splits=5):
 
         probas_fold = []
 
-        for modality in ['resp', 'eeg', 'ecg']:
+        for modality in ['eeg', 'ecg']:
 
             X_train_mod, _ = data[modality]
 
@@ -330,7 +328,7 @@ def _fit_ensemble_with_cv(data, n_splits=5):
     # ===============================
     final_models = {}
 
-    for modality in ['resp', 'eeg', 'ecg']:
+    for modality in ['eeg', 'ecg']:
 
         X_train_mod, X_test_mod = data[modality]
 

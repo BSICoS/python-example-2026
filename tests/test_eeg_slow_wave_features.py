@@ -235,13 +235,15 @@ class SlowWaveFeatureTests(unittest.TestCase):
 
         np.testing.assert_allclose(actual, legacy, rtol=0, atol=0, equal_nan=True)
 
-    def test_final_eeg_schema_contains_record_level_slow_wave_features(self):
+    def test_final_eeg_schema_contains_only_background_features(self):
         for channel_name in eeg_processing.EEG_CHANNEL_SPECS:
-            for feature_name in eeg_processing.SLOW_WAVE_METRICS:
+            for feature_name in eeg_processing.BACKGROUND_METRICS:
                 self.assertIn(
-                    f'{channel_name}_{feature_name}',
+                    f'{channel_name}_{feature_name}_Median',
                     eeg_processing.EEG_FEATURE_NAMES,
                 )
+        self.assertFalse(any('NREM_SW' in name for name in eeg_processing.EEG_FEATURE_NAMES))
+        self.assertEqual(len(eeg_processing.EEG_FEATURE_NAMES), 96)
         self.assertEqual(
             len(eeg_processing.EEG_FEATURE_NAMES),
             eeg_processing.EEG_FEATURE_LENGTH,

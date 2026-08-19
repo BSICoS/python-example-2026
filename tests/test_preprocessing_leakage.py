@@ -274,19 +274,18 @@ class PreprocessingLeakageTests(unittest.TestCase):
             'ecg',
         )
 
-    def test_ecg_eeg_search_data_excludes_ineligible_samples_and_resp_features(self):
+    def test_ecg_eeg_search_data_excludes_ineligible_samples(self):
         features = np.array([
-            [20.0, 0.0, 10.0, 20.0, 30.0],
-            [21.0, 1.0, np.nan, 21.0, 31.0],
-            [22.0, 0.0, 12.0, np.nan, 32.0],
-            [23.0, 1.0, 13.0, 23.0, 33.0],
+            [20.0, 0.0, 20.0, 30.0],
+            [21.0, 1.0, 21.0, 31.0],
+            [22.0, 0.0, np.nan, 32.0],
+            [23.0, 1.0, 23.0, 33.0],
         ], dtype=np.float32)
         labels = np.array([0, 1, 0, 1], dtype=np.int32)
         feature_indices = {
             'demographics': np.array([0, 1], dtype=np.int32),
-            'resp': np.array([2], dtype=np.int32),
-            'eeg': np.array([3], dtype=np.int32),
-            'ecg': np.array([4], dtype=np.int32),
+            'eeg': np.array([2], dtype=np.int32),
+            'ecg': np.array([3], dtype=np.int32),
         }
 
         search_data = _get_ecg_eeg_search_data(
@@ -294,7 +293,6 @@ class PreprocessingLeakageTests(unittest.TestCase):
             labels,
             feature_indices,
             modality_presence_indices={
-                'resp': feature_indices['resp'],
                 'eeg': feature_indices['eeg'],
                 'ecg': feature_indices['ecg'],
             },
@@ -303,8 +301,8 @@ class PreprocessingLeakageTests(unittest.TestCase):
         )
 
         self.assertEqual(search_data['route_name'], 'ecg_eeg')
-        self.assertTrue(np.array_equal(search_data['raw_indices'], [0, 1, 3, 4]))
-        self.assertTrue(np.array_equal(search_data['features'], features[[0, 1, 3]][:, [0, 1, 3, 4]]))
+        self.assertTrue(np.array_equal(search_data['raw_indices'], [0, 1, 2, 3]))
+        self.assertTrue(np.array_equal(search_data['features'], features[[0, 1, 3]][:, [0, 1, 2, 3]]))
         self.assertTrue(np.array_equal(search_data['labels'], labels[[0, 1, 3]]))
         self.assertEqual(search_data['categorical_indices'], [1])
         self.assertTrue(np.array_equal(search_data['site_groups'], ['A', 'B', 'D']))

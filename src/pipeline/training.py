@@ -33,10 +33,6 @@ from .preprocessing import build_preprocessor, get_processed_feature_names, rema
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
 ENSEMBLE_MODALITIES = ('eeg', 'ecg')
-COMPETITIVE_CAISR_FEATURE_NAMES = (
-    'CAISR_REM_fraction',
-    'CAISR_limb_movements_per_hour',
-)
 
 # Context needed to evaluate the age-conditioned metric on scaled model inputs.
 AGE_FEATURE_INDEX = 0
@@ -171,7 +167,7 @@ def get_feature_export_paths(export_root, prefix):
 
 
 def _get_feature_group_name(feature_index, modality_presence_indices):
-    for group_name in ('resp', 'eeg', 'ecg'):
+    for group_name in ('eeg', 'ecg'):
         group_index_set = set(np.asarray(modality_presence_indices[group_name], dtype=np.int32).tolist())
         if feature_index in group_index_set:
             return group_name
@@ -264,17 +260,6 @@ def _get_combined_model_indices(feature_indices):
     Guarantees demographic indices are always included for all signal configurations.
     """
     demo_indices = np.asarray(feature_indices.get('demographics', []), dtype=np.int32)
-    feature_names = get_feature_names()
-    competitive_caisr_indices = np.asarray([
-        feature_names.index(name) for name in COMPETITIVE_CAISR_FEATURE_NAMES
-    ], dtype=np.int32)
-    eeg_indices = np.asarray(feature_indices.get('eeg', []), dtype=np.int32)
-    competitive_eeg_indices = np.asarray([
-        feature_index
-        for feature_index in eeg_indices
-        if 'NREM_SW_' not in feature_names[feature_index]
-    ], dtype=np.int32)
-    
     def _combine(modality_keys):
         combined = set(demo_indices.tolist())
         for key in modality_keys:
@@ -283,9 +268,9 @@ def _get_combined_model_indices(feature_indices):
         return np.array(sorted(list(combined)), dtype=np.int32)
 
     return {
-        'ecg': _combine(['ecg', competitive_caisr_indices]),
-        'eeg': _combine([competitive_eeg_indices, competitive_caisr_indices]),
-        'ecg_eeg': _combine(['ecg', competitive_eeg_indices, competitive_caisr_indices]),
+        'ecg': _combine(['ecg']),
+        'eeg': _combine(['eeg']),
+        'ecg_eeg': _combine(['ecg', 'eeg']),
     }
 
 
@@ -829,7 +814,7 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         'feature_indices': {
             name: indices.tolist()
             for name, indices in feature_indices.items()
-            if name in {'all', 'resp', 'eeg', 'ecg', 'demographics'}
+            if name in {'eeg', 'ecg', 'demographics'}
         },
         'combined_indices': {
             k: v.tolist() for k, v in combined_indices.items()

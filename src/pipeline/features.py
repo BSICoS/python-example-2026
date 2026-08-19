@@ -6,16 +6,13 @@ import numpy as np
 import pandas as pd
 
 from src.common.channel_utils import normalize_channel_label
-from src.common.caisr import get_sleep_architecture_features, load_annotation
 from helper_code import HEADERS, PHYSIOLOGICAL_DATA_SUBFOLDER, load_age, load_sex, load_signal_data
 from src.ecg_processing import ECG_FEATURE_LENGTH, ECG_FEATURE_NAMES, ECG_KEYWORDS, processECG
 from src.eeg_processing import (
     EEG_CHANNEL_SPECS, EEG_FEATURE_LENGTH, EEG_FEATURE_NAMES,
-    EEG_SEGMENT_FEATURE_NAMES, EEG_SLOW_WAVE_FEATURE_NAMES, processEEG, _get_eeg_aliases,
+    EEG_SEGMENT_FEATURE_NAMES, processEEG, _get_eeg_aliases,
 )
 from src.resp_processing import (
-    RESP_FEATURE_LENGTH,
-    RESP_FEATURE_NAMES,
     _get_resp_alias_groups,
     select_best_respiration_signal,
 )
@@ -27,7 +24,6 @@ from .config import (
     SCRIPT_DIR,
     SEGMENT_DURATION_SECONDS,
     SEGMENT_STRIDE_SECONDS,
-    TOTAL_PHYSIOLOGICAL_FEATURE_LENGTH,
 )
 
 REQUIRED_SIGNAL_ALIASES_CACHE = {}
@@ -35,22 +31,6 @@ DEMOGRAPHIC_FEATURE_NAMES = (
     'Age',
     'Sex',
 )
-CHEAP_FEATURE_NAMES = (
-    'BMI',
-    'CAISR_W_fraction',
-    'CAISR_N1_fraction',
-    'CAISR_N2_fraction',
-    'CAISR_N3_fraction',
-    'CAISR_REM_fraction',
-    'CAISR_sleep_efficiency',
-    'CAISR_stage_transitions_per_hour',
-    'CAISR_WASO_minutes',
-    'CAISR_REM_latency_minutes',
-    'CAISR_respiratory_events_per_hour',
-    'CAISR_arousals_per_hour',
-    'CAISR_limb_movements_per_hour',
-)
-
 def _build_aggregated_feature_names(segment_feature_names):
     names = []
     for feature_name in segment_feature_names:
@@ -66,18 +46,14 @@ def _build_aggregated_feature_names(segment_feature_names):
 
 FEATURE_NAME_GROUPS = {
     'demographics': DEMOGRAPHIC_FEATURE_NAMES,
-    'resp': _build_aggregated_feature_names(RESP_FEATURE_NAMES),
     'eeg': EEG_FEATURE_NAMES,
     'ecg': _build_aggregated_feature_names(ECG_FEATURE_NAMES),
 }
 FEATURE_NAMES = (
     *FEATURE_NAME_GROUPS['demographics'],
-    *FEATURE_NAME_GROUPS['resp'],
     *FEATURE_NAME_GROUPS['eeg'],
     *FEATURE_NAME_GROUPS['ecg'],
-    *CHEAP_FEATURE_NAMES,
 )
-LEGACY_FEATURE_VECTOR_LENGTH = len(FEATURE_NAMES) - len(CHEAP_FEATURE_NAMES)
 
 SEGMENT_AGGREGATION_FUNCTIONS = {
     'Max': lambda values: float(np.percentile(values, 90)),
@@ -183,7 +159,7 @@ def _load_cached_feature_vector(cache_file):
         return None
 
     vector = _coerce_feature_vector(payload)
-    if vector.size not in (LEGACY_FEATURE_VECTOR_LENGTH, len(FEATURE_NAMES)):
+    if vector.size != len(FEATURE_NAMES):
         return None
     return vector
 
@@ -202,17 +178,8 @@ def _save_cached_feature_vector(cache_file, feature_vector):
     csv_file = _get_feature_cache_csv_file(cache_file)
     temp_csv_file = f"{csv_file}.tmp"
     
-    # Safely match feature names to payload length
-    feature_names = list(get_feature_names())
-    if len(payload) != len(feature_names):
-        if len(payload) > len(feature_names):
-            extra = len(payload) - len(feature_names)
-            feature_names += [f"extra_feature_{i}" for i in range(extra)]
-        else:
-            feature_names = feature_names[:len(payload)]
-
     try:
-        pd.DataFrame([payload], columns=feature_names).to_csv(temp_csv_file, index=False)
+        pd.DataFrame([payload], columns=get_feature_names()).to_csv(temp_csv_file, index=False)
         os.replace(temp_csv_file, csv_file)
     finally:
         if os.path.exists(temp_csv_file):
@@ -240,17 +207,6 @@ def extract_demographic_features(data):
     return np.concatenate([age, sex_vec]).astype(np.float32)
 
 
-def _extract_cheap_features(patient_data, data_folder, site_id, patient_id, session_id):
-    try:
-        bmi = float(patient_data.get('BMI'))
-    except (TypeError, ValueError):
-        bmi = np.nan
-    annotation = load_annotation(data_folder, site_id, patient_id, session_id)
-    return np.concatenate((
-        np.asarray([bmi if np.isfinite(bmi) else np.nan], dtype=np.float32),
-        get_sleep_architecture_features(annotation),
-    ))
-
 def get_feature_names():
     return FEATURE_NAMES
 
@@ -263,7 +219,7 @@ def get_feature_group_indices(include_demographics=False):
     else:
         demo_indices = np.array([], dtype=np.int32)
 
-    for group_name in ('resp', 'eeg', 'ecg'):
+    for group_name in ('eeg', 'ecg'):
         group_length = len(FEATURE_NAME_GROUPS[group_name])
         group_indices = np.arange(start, start + group_length, dtype=np.int32)
         if include_demographics:
@@ -383,7 +339,7 @@ def _extract_segmented_features(extractor, segment_feature_names, physiological_
 
     return _aggregate_segment_feature_vectors(segment_feature_vectors, segment_feature_names)
 
-def _extract_respiration_and_ecg_features(
+def _extract_ecg_features(
     physiological_data,
     physiological_fs,
     csv_path,
@@ -414,17 +370,10 @@ def _extract_respiration_and_ecg_features(
         if not np.all(np.isnan(ecg_vector)):
             ecg_vectors.append(ecg_vector)
 
-    return (
-        np.full(RESP_FEATURE_LENGTH * len(SEGMENT_AGGREGATION_NAMES), np.nan, dtype=np.float32),
-        _aggregate_segment_feature_vectors(
-            ecg_vectors,
-            ECG_FEATURE_NAMES,
-        ),
-    )
+    return _aggregate_segment_feature_vectors(ecg_vectors, ECG_FEATURE_NAMES)
 
-def extract_extended_physiological_features(physiological_data, physiological_fs, csv_path=DEFAULT_CSV_PATH,
-                                             caisr_annotation=None):
-    resp_features, ecg_features = _extract_respiration_and_ecg_features(
+def extract_extended_physiological_features(physiological_data, physiological_fs, csv_path=DEFAULT_CSV_PATH):
+    ecg_features = _extract_ecg_features(
         physiological_data,
         physiological_fs,
         csv_path,
@@ -436,10 +385,8 @@ def extract_extended_physiological_features(physiological_data, physiological_fs
         physiological_fs,
         csv_path,
     )
-    eeg_slow_wave_features = np.full(
-        len(EEG_SLOW_WAVE_FEATURE_NAMES), np.nan, dtype=np.float32)
-
-    return np.hstack([resp_features, eeg_background_features, eeg_slow_wave_features, ecg_features]).astype(np.float32)
+    # ECGage_Age_Diff is populated after demographics are joined to this vector.
+    return np.hstack([eeg_background_features, ecg_features, np.nan]).astype(np.float32)
 
 def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_id, session_id, csv_path, require_physiological_data):
     demographic_features = extract_demographic_features(patient_data)
@@ -451,7 +398,7 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
         patient_id,
         session_id,
     )
-    total_physio_names_len = sum(len(FEATURE_NAME_GROUPS[g]) for g in ('resp', 'eeg', 'ecg'))
+    total_physio_names_len = sum(len(FEATURE_NAME_GROUPS[g]) for g in ('eeg', 'ecg'))
 
     if os.path.exists(physiological_data_file):
         physiological_data, physiological_fs = _load_required_signal_data(physiological_data_file, csv_path)
@@ -468,17 +415,10 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
     # Combine demographic and physiological features first
     combined = np.hstack([demographic_features, physiological_features]).astype(np.float32)
 
-    # Fill in ECGage_Age_Diff within the legacy demographic/physiology schema.
+    # Fill in ECGage_Age_Diff within the final demographic/physiology schema.
     feature_names = get_feature_names()
     if 'ECGage_Age_Diff' in feature_names:
         diff_idx = feature_names.index('ECGage_Age_Diff')
-        
-        if len(combined) < LEGACY_FEATURE_VECTOR_LENGTH:
-            combined = np.pad(
-                combined,
-                (0, LEGACY_FEATURE_VECTOR_LENGTH - len(combined)),
-                constant_values=np.nan,
-            )
         
         # Calculate diff if ECGage_Median is present
         if 'ECGage_Median' in feature_names:
@@ -490,19 +430,16 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
             else:
                 combined[diff_idx] = np.nan
 
-    if len(combined) != LEGACY_FEATURE_VECTOR_LENGTH:
-        if len(combined) > LEGACY_FEATURE_VECTOR_LENGTH:
-            combined = combined[:LEGACY_FEATURE_VECTOR_LENGTH]
+    if len(combined) != len(FEATURE_NAMES):
+        if len(combined) > len(FEATURE_NAMES):
+            combined = combined[:len(FEATURE_NAMES)]
         else:
             combined = np.pad(
                 combined,
-                (0, LEGACY_FEATURE_VECTOR_LENGTH - len(combined)),
+                (0, len(FEATURE_NAMES) - len(combined)),
                 constant_values=np.nan,
             )
-
-    cheap_features = _extract_cheap_features(
-        patient_data, data_folder, site_id, patient_id, session_id)
-    return np.hstack([combined, cheap_features]).astype(np.float32)
+    return combined.astype(np.float32)
 
 def get_or_create_record_feature_vector(
     record,
@@ -518,11 +455,6 @@ def get_or_create_record_feature_vector(
     cache_file = _get_feature_cache_file(data_folder, site_id, patient_id, session_id)
     cached_features = _load_cached_feature_vector(cache_file)
     if cached_features is not None:
-        if cached_features.size == LEGACY_FEATURE_VECTOR_LENGTH:
-            cheap_features = _extract_cheap_features(
-                patient_data, data_folder, site_id, patient_id, session_id)
-            cached_features = np.hstack([cached_features, cheap_features]).astype(np.float32)
-            _save_cached_feature_vector(cache_file, cached_features)
         return (cached_features, True) if return_cache_hit else cached_features
 
     feature_vector = _compute_record_feature_vector(
