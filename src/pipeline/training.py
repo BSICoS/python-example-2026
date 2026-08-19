@@ -29,16 +29,6 @@ from .preprocessing import build_preprocessor, get_processed_feature_names, rema
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
 ENSEMBLE_MODALITIES = ('eeg', 'ecg')
-COMPETITIVE_EEG_SLOW_WAVE_FEATURE_NAMES = frozenset((
-    'C3-M2_NREM_SW_neg_slope_median',
-    'C4-M1_NREM_SW_neg_slope_median',
-    'F3-M2_NREM_SW_neg_slope_median',
-    'F4-M1_NREM_SW_neg_slope_median',
-    'C3-M2_NREM_SW_neg_half_duration_IQR',
-    'C4-M1_NREM_SW_neg_half_duration_IQR',
-    'F3-M2_NREM_SW_neg_half_duration_IQR',
-    'F4-M1_NREM_SW_neg_half_duration_IQR',
-))
 
 # Context needed to evaluate the age-conditioned metric on scaled model inputs.
 AGE_FEATURE_INDEX = 0
@@ -271,10 +261,7 @@ def _get_combined_model_indices(feature_indices):
     competitive_eeg_indices = np.asarray([
         feature_index
         for feature_index in eeg_indices
-        if (
-            'NREM_SW_' not in feature_names[feature_index]
-            or feature_names[feature_index] in COMPETITIVE_EEG_SLOW_WAVE_FEATURE_NAMES
-        )
+        if 'NREM_SW_' not in feature_names[feature_index]
     ], dtype=np.int32)
     
     def _combine(modality_keys):

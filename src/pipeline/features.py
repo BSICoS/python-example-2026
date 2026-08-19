@@ -6,12 +6,12 @@ import numpy as np
 import pandas as pd
 
 from src.common.channel_utils import normalize_channel_label
-from src.common.caisr import load_annotation, unavailable_annotation
+from src.common.caisr import get_sleep_architecture_features, load_annotation
 from helper_code import HEADERS, PHYSIOLOGICAL_DATA_SUBFOLDER, load_age, load_sex, load_signal_data
 from src.ecg_processing import ECG_FEATURE_LENGTH, ECG_FEATURE_NAMES, ECG_KEYWORDS, processECG
 from src.eeg_processing import (
     EEG_CHANNEL_SPECS, EEG_FEATURE_LENGTH, EEG_FEATURE_NAMES,
-    EEG_SEGMENT_FEATURE_NAMES, extract_record_slow_wave_features, processEEG, _get_eeg_aliases,
+    EEG_SEGMENT_FEATURE_NAMES, EEG_SLOW_WAVE_FEATURE_NAMES, processEEG, _get_eeg_aliases,
 )
 from src.resp_processing import (
     RESP_FEATURE_LENGTH,
@@ -34,6 +34,21 @@ REQUIRED_SIGNAL_ALIASES_CACHE = {}
 DEMOGRAPHIC_FEATURE_NAMES = (
     'Age',
     'Sex',
+)
+CHEAP_FEATURE_NAMES = (
+    'BMI',
+    'CAISR_W_fraction',
+    'CAISR_N1_fraction',
+    'CAISR_N2_fraction',
+    'CAISR_N3_fraction',
+    'CAISR_REM_fraction',
+    'CAISR_sleep_efficiency',
+    'CAISR_stage_transitions_per_hour',
+    'CAISR_WASO_minutes',
+    'CAISR_REM_latency_minutes',
+    'CAISR_respiratory_events_per_hour',
+    'CAISR_arousals_per_hour',
+    'CAISR_limb_movements_per_hour',
 )
 
 def _build_aggregated_feature_names(segment_feature_names):
@@ -60,7 +75,9 @@ FEATURE_NAMES = (
     *FEATURE_NAME_GROUPS['resp'],
     *FEATURE_NAME_GROUPS['eeg'],
     *FEATURE_NAME_GROUPS['ecg'],
+    *CHEAP_FEATURE_NAMES,
 )
+LEGACY_FEATURE_VECTOR_LENGTH = len(FEATURE_NAMES) - len(CHEAP_FEATURE_NAMES)
 
 SEGMENT_AGGREGATION_FUNCTIONS = {
     'Max': lambda values: float(np.percentile(values, 90)),
@@ -166,7 +183,7 @@ def _load_cached_feature_vector(cache_file):
         return None
 
     vector = _coerce_feature_vector(payload)
-    if vector.size != len(FEATURE_NAMES):
+    if vector.size not in (LEGACY_FEATURE_VECTOR_LENGTH, len(FEATURE_NAMES)):
         return None
     return vector
 
@@ -221,6 +238,18 @@ def extract_demographic_features(data):
     sex_vec = np.array([sex_value], dtype=np.float32)
 
     return np.concatenate([age, sex_vec]).astype(np.float32)
+
+
+def _extract_cheap_features(patient_data, data_folder, site_id, patient_id, session_id):
+    try:
+        bmi = float(patient_data.get('BMI'))
+    except (TypeError, ValueError):
+        bmi = np.nan
+    annotation = load_annotation(data_folder, site_id, patient_id, session_id)
+    return np.concatenate((
+        np.asarray([bmi if np.isfinite(bmi) else np.nan], dtype=np.float32),
+        get_sleep_architecture_features(annotation),
+    ))
 
 def get_feature_names():
     return FEATURE_NAMES
@@ -407,9 +436,8 @@ def extract_extended_physiological_features(physiological_data, physiological_fs
         physiological_fs,
         csv_path,
     )
-    eeg_slow_wave_features = extract_record_slow_wave_features(
-        physiological_data, physiological_fs, csv_path,
-        unavailable_annotation() if caisr_annotation is None else caisr_annotation)
+    eeg_slow_wave_features = np.full(
+        len(EEG_SLOW_WAVE_FEATURE_NAMES), np.nan, dtype=np.float32)
 
     return np.hstack([resp_features, eeg_background_features, eeg_slow_wave_features, ecg_features]).astype(np.float32)
 
@@ -427,13 +455,10 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
 
     if os.path.exists(physiological_data_file):
         physiological_data, physiological_fs = _load_required_signal_data(physiological_data_file, csv_path)
-        caisr_annotation = load_annotation(
-            data_folder, site_id, patient_data.get(HEADERS['bids_folder'], patient_id), session_id)
         physiological_features = extract_extended_physiological_features(
             physiological_data,
             physiological_fs,
             csv_path=csv_path,
-            caisr_annotation=caisr_annotation,
         )
     elif require_physiological_data:
         raise FileNotFoundError(f"Missing physiological data for {patient_id}.")
@@ -469,7 +494,9 @@ def _compute_record_feature_vector(patient_data, data_folder, site_id, patient_i
         else:
             combined = np.pad(combined, (0, len(feature_names) - len(combined)), constant_values=np.nan)
 
-    return combined
+    cheap_features = _extract_cheap_features(
+        patient_data, data_folder, site_id, patient_id, session_id)
+    return np.hstack([combined, cheap_features]).astype(np.float32)
 
 def get_or_create_record_feature_vector(
     record,
@@ -485,6 +512,11 @@ def get_or_create_record_feature_vector(
     cache_file = _get_feature_cache_file(data_folder, site_id, patient_id, session_id)
     cached_features = _load_cached_feature_vector(cache_file)
     if cached_features is not None:
+        if cached_features.size == LEGACY_FEATURE_VECTOR_LENGTH:
+            cheap_features = _extract_cheap_features(
+                patient_data, data_folder, site_id, patient_id, session_id)
+            cached_features = np.hstack([cached_features, cheap_features]).astype(np.float32)
+            _save_cached_feature_vector(cache_file, cached_features)
         return (cached_features, True) if return_cache_hit else cached_features
 
     feature_vector = _compute_record_feature_vector(
