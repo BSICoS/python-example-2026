@@ -274,7 +274,7 @@ def _get_combined_model_indices(feature_indices):
 
 
 def _get_model_modalities(model_name):
-    return ENSEMBLE_MODALITIES if model_name == 'all' else tuple(model_name.split('_'))
+    return tuple(model_name.split('_'))
 
 
 def _get_route_presence_mask(feature_matrix, model_name, modality_presence_indices):
@@ -293,7 +293,8 @@ def _get_route_categorical_indices(raw_indices, categorical_indices):
     ]
 
 
-def _get_ecg_eeg_search_data(
+def _get_route_search_data(
+    route_name,
     feature_matrix,
     labels,
     feature_indices,
@@ -301,10 +302,10 @@ def _get_ecg_eeg_search_data(
     categorical_indices=None,
     site_groups=None,
 ):
-    raw_indices = _get_combined_model_indices(feature_indices)['ecg_eeg']
+    raw_indices = _get_combined_model_indices(feature_indices)[route_name]
     eligible_mask = _get_route_presence_mask(
         feature_matrix,
-        'ecg_eeg',
+        route_name,
         modality_presence_indices,
     )
     return {
@@ -312,10 +313,18 @@ def _get_ecg_eeg_search_data(
         'labels': labels[eligible_mask],
         'categorical_indices': _get_route_categorical_indices(raw_indices, categorical_indices),
         'site_groups': None if site_groups is None else site_groups[eligible_mask],
-        'route_name': 'ecg_eeg',
+        'route_name': route_name,
         'raw_indices': raw_indices,
         'age_feature_index': int(np.flatnonzero(raw_indices == 0)[0]),
     }
+
+
+def _get_ecg_eeg_search_data(*args, **kwargs):
+    return _get_route_search_data('ecg_eeg', *args, **kwargs)
+
+
+def _get_eeg_search_data(*args, **kwargs):
+    return _get_route_search_data('eeg', *args, **kwargs)
 
 
 def _fit_route_model(route_features, route_labels, raw_indices, categorical_indices, final_params):
@@ -345,6 +354,7 @@ def _fit_ensemble(
     final_params=None,
     modality_presence_indices=None,
     categorical_indices=None,
+    final_params_by_route=None,
 ):
     models = {}
     combined_indices = _get_combined_model_indices(feature_indices)
@@ -368,12 +378,19 @@ def _fit_ensemble(
         route_features = feature_matrix[route_mask][:, raw_indices]
         if raw_indices.size == 0:
             continue
+        route_params = (
+            final_params_by_route.get(model_name, final_params)
+            if final_params_by_route is not None
+            else final_params
+        )
+        if route_params is None:
+            route_params = {}
         models[model_name] = _fit_route_model(
             route_features,
             route_labels,
             raw_indices,
             categorical_indices,
-            final_params,
+            route_params,
         )
         
     return models
@@ -700,9 +717,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         site_groups=site_groups,
     )
     print("\n" + "=" * 60)
-    print("FINAL HYPERPARAMETER SEARCH")
+    print("FINAL ECG+EEG HYPERPARAMETER SEARCH")
     print("=" * 60)
-    final_params, final_search_score = cv_runner.select_final_params(
+    final_params_ecg_eeg, final_search_score_ecg_eeg = cv_runner.select_final_params(
         features,
         labels,
         feature_indices,
@@ -710,8 +727,71 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         categorical_indices=categorical_indices if categorical_indices else None,
         site_groups=site_groups,
     )
-    print(f"  Best final parameters: {final_params}")
-    print(f"  Final CV search score: {final_search_score:.3f}")
+    print(f"  ECG+EEG best final parameters: {final_params_ecg_eeg}")
+    print(f"  ECG+EEG final grouped search score: {final_search_score_ecg_eeg:.3f}")
+
+    eeg_cv_runner = EnsembleCrossValidator(
+        config=cv_config,
+        param_dist=PARAM_DIST,
+        default_threshold=DEFAULT_ENSEMBLE_THRESHOLD,
+        build_preprocessor=build_preprocessor,
+        build_search_model=_build_search_model,
+        fit_ensemble=_fit_ensemble,
+        predict_probabilities=predict_ensemble_probabilities,
+        select_model_names=select_ensemble_model_names,
+        predict_model_probabilities=predict_route_model_probabilities,
+        fit_ensemble_handles_preprocessing=True,
+        select_search_data=_get_eeg_search_data,
+        search_age_feature_index=raw_age_feature_index,
+        search_age_feature_scale=1.0,
+        search_age_feature_offset=0.0,
+    )
+    print("\n" + "=" * 60)
+    print("EEG-SPECIFIC LEAVE-ONE-HOSPITAL-OUT HPO")
+    print("=" * 60)
+    eeg_hospital_cv_result = eeg_cv_runner.evaluate_grouped_nested_cv(
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices=modality_presence_indices,
+        categorical_indices=categorical_indices if categorical_indices else None,
+        site_groups=site_groups,
+    )
+    eeg_route_metrics = eeg_hospital_cv_result.metrics.get(
+        'model_eligible_oof_metrics', {}).get('eeg')
+    eeg_route_metrics_by_site = eeg_hospital_cv_result.metrics.get(
+        'model_eligible_oof_metrics_by_site', {}).get('eeg', {})
+    for held_out_site, site_metrics in sorted(eeg_route_metrics_by_site.items()):
+        print(
+            f"  held-out {held_out_site}: Age-conditioned AUROC "
+            f"{site_metrics.get('age_conditioned_auroc', np.nan):.3f}"
+        )
+    site_scores = np.asarray([
+        metrics.get('age_conditioned_auroc', np.nan)
+        for metrics in eeg_route_metrics_by_site.values()
+    ], dtype=float)
+    site_scores = site_scores[np.isfinite(site_scores)]
+    if site_scores.size:
+        print(f"  EEG route LOHO mean +/- std: {np.mean(site_scores):.3f} +/- {np.std(site_scores):.3f}")
+    if eeg_route_metrics is not None:
+        print(
+            "  EEG route pooled OOF Age-conditioned AUROC: "
+            f"{eeg_route_metrics.get('age_conditioned_auroc', np.nan):.3f}"
+        )
+
+    print("\n" + "=" * 60)
+    print("EEG-SPECIFIC FINAL GROUPED HPO")
+    print("=" * 60)
+    final_params_eeg, final_search_score_eeg = eeg_cv_runner.select_final_params(
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices=categorical_indices if categorical_indices else None,
+        site_groups=site_groups,
+    )
+    print(f"  EEG best final parameters: {final_params_eeg}")
+    print(f"  EEG final grouped search score: {final_search_score_eeg:.3f}")
     threshold = hospital_cv_result.threshold
     if hospital_cv_result.metrics.get('skipped'):
         threshold = random_cv_result.threshold
@@ -767,11 +847,16 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     print("FINAL FIT")
     print("=" * 60)
     print("Fitting final ensemble on all training data...")
+    final_params_by_route = {
+        'ecg_eeg': dict(final_params_ecg_eeg),
+        'eeg': dict(final_params_eeg),
+        'ecg': dict(final_params_ecg_eeg),
+    }
     models = _fit_ensemble(
         features,
         labels,
         feature_indices,
-        final_params=final_params,
+        final_params_by_route=final_params_by_route,
         modality_presence_indices=modality_presence_indices,
         categorical_indices=categorical_indices,
     )
@@ -827,7 +912,10 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         'feature_exports': feature_exports,
         'random_cv_metrics': random_cv_result.metrics,
         'hospital_cv_metrics': hospital_cv_result.metrics,
-        'final_params': final_params,
-        'final_search_score': final_search_score,
+        'final_params_by_route': final_params_by_route,
+        'final_params_ecg_eeg': final_params_ecg_eeg,
+        'final_search_score_ecg_eeg': final_search_score_ecg_eeg,
+        'final_params_eeg': final_params_eeg,
+        'final_search_score_eeg': final_search_score_eeg,
         'training_metrics': training_metrics,
     }

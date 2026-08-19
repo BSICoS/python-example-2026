@@ -495,6 +495,21 @@ class EnsembleCrossValidator:
             routed_model_oof,
             threshold,
         )
+        model_eligible_oof_metrics_by_site = {}
+        site_values = metadata.get('site_groups')
+        if site_values is not None:
+            site_values = np.asarray(site_values)
+            for model_name, probabilities in routed_model_oof['probabilities'].items():
+                model_site_metrics = {}
+                probabilities = np.asarray(probabilities, dtype=np.float32)
+                for site in np.unique(site_values):
+                    mask = (site_values == site) & np.isfinite(probabilities)
+                    if np.any(mask):
+                        model_site_metrics[str(site)] = self._compute_evaluation_metrics(
+                            labels[mask], probabilities[mask], threshold,
+                            ages=np.asarray(ages)[mask],
+                        )
+                model_eligible_oof_metrics_by_site[model_name] = model_site_metrics
         for model_name, model_metrics in model_eligible_oof_metrics.items():
             self._print_metrics(
                 f"  Model OOF metrics ({model_name}, n={model_metrics['n_records']}):",
@@ -514,6 +529,7 @@ class EnsembleCrossValidator:
             'oof_calibrated_metrics': oof_calibrated_metrics,
             'model_route_counts': model_route_counts,
             'model_eligible_oof_metrics': model_eligible_oof_metrics,
+            'model_eligible_oof_metrics_by_site': model_eligible_oof_metrics_by_site,
         }
         return CrossValidationResult(
             threshold=threshold,
