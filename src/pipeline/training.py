@@ -29,6 +29,16 @@ from .preprocessing import build_preprocessor, get_processed_feature_names, rema
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
 ENSEMBLE_MODALITIES = ('eeg', 'ecg')
+COMPETITIVE_EEG_SLOW_WAVE_FEATURE_NAMES = frozenset((
+    'C3-M2_NREM_SW_neg_slope_median',
+    'C4-M1_NREM_SW_neg_slope_median',
+    'F3-M2_NREM_SW_neg_slope_median',
+    'F4-M1_NREM_SW_neg_slope_median',
+    'C3-M2_NREM_SW_neg_half_duration_IQR',
+    'C4-M1_NREM_SW_neg_half_duration_IQR',
+    'F3-M2_NREM_SW_neg_half_duration_IQR',
+    'F4-M1_NREM_SW_neg_half_duration_IQR',
+))
 
 # Context needed to evaluate the age-conditioned metric on scaled model inputs.
 AGE_FEATURE_INDEX = 0
@@ -256,18 +266,28 @@ def _get_combined_model_indices(feature_indices):
     Guarantees demographic indices are always included for all signal configurations.
     """
     demo_indices = np.asarray(feature_indices.get('demographics', []), dtype=np.int32)
+    feature_names = get_feature_names()
+    eeg_indices = np.asarray(feature_indices.get('eeg', []), dtype=np.int32)
+    competitive_eeg_indices = np.asarray([
+        feature_index
+        for feature_index in eeg_indices
+        if (
+            'NREM_SW_' not in feature_names[feature_index]
+            or feature_names[feature_index] in COMPETITIVE_EEG_SLOW_WAVE_FEATURE_NAMES
+        )
+    ], dtype=np.int32)
     
     def _combine(modality_keys):
         combined = set(demo_indices.tolist())
         for key in modality_keys:
-            if key in feature_indices:
-                combined.update(np.asarray(feature_indices[key], dtype=np.int32).tolist())
+            indices = feature_indices.get(key, []) if isinstance(key, str) else key
+            combined.update(np.asarray(indices, dtype=np.int32).tolist())
         return np.array(sorted(list(combined)), dtype=np.int32)
 
     return {
         'ecg': _combine(['ecg']),
-        'eeg': _combine(['eeg']),
-        'ecg_eeg': _combine(['ecg', 'eeg']),
+        'eeg': _combine([competitive_eeg_indices]),
+        'ecg_eeg': _combine(['ecg', competitive_eeg_indices]),
     }
 
 
