@@ -55,6 +55,41 @@ class _ProbabilityEstimator:
 
 
 class CrossValidationScoringTests(unittest.TestCase):
+    def test_grouped_finalize_uses_record_level_routes_with_unique_site_metadata(self):
+        cv = EnsembleCrossValidator(
+            CrossValidationConfig(search_scoring='roc_auc'),
+            param_dist={},
+            default_threshold=0.5,
+            build_preprocessor=lambda *args, **kwargs: None,
+            build_search_model=lambda *args, **kwargs: None,
+            fit_ensemble=lambda *args, **kwargs: None,
+            predict_probabilities=lambda *args, **kwargs: None,
+        )
+        n_records = 12
+        labels = np.array([0, 1] * (n_records // 2), dtype=np.int32)
+        probabilities = np.array([0.2, 0.8] * (n_records // 2), dtype=np.float32)
+        routed = {
+            'model_names': np.array(['ecg_eeg'] * 9 + ['eeg'] * 3, dtype=object),
+            'probabilities': {
+                'ecg_eeg': np.array([0.2, 0.8] * 5 + [np.nan, np.nan], dtype=np.float32),
+                'eeg': np.array([np.nan] * 10 + [0.3, 0.7], dtype=np.float32),
+            },
+        }
+        result = cv._finalize_result(
+            labels,
+            np.arange(n_records, dtype=float),
+            probabilities,
+            routed,
+            {},
+            [],
+            {'cv_strategy': 'grouped_by_site', 'site_groups': ['I0002', 'I0006', 'S0001']},
+        )
+
+        self.assertFalse(result.metrics['skipped'])
+        self.assertEqual(result.metrics['model_route_counts'], {'ecg_eeg': 9, 'eeg': 3})
+        self.assertEqual(result.metrics['model_eligible_oof_metrics']['ecg_eeg']['n_records'], 10)
+        self.assertEqual(result.metrics['model_eligible_oof_metrics']['eeg']['n_records'], 2)
+
     def test_config_selects_age_conditioned_auroc(self):
         self.assertEqual(_read_config_literal('CV_SEARCH_SCORING'), 'age_conditioned_auroc')
 

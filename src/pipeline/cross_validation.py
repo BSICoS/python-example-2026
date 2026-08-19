@@ -465,6 +465,35 @@ class EnsembleCrossValidator:
         return fold_metrics, oof_probabilities, routed_model_oof
     
     def _finalize_result(self, labels, ages, oof_probabilities, routed_model_oof, best_params_per_fold, fold_metrics, metadata):
+        # All arrays used for OOF metrics are record-level.  In particular,
+        # grouped-CV metadata stores only the unique site names; it must never
+        # be used as a per-record mask (which would broadcast against N OOF
+        # records).
+        n_records = np.asarray(labels).reshape(-1).size
+        if np.asarray(oof_probabilities).reshape(-1).size != n_records:
+            raise ValueError(
+                f'OOF probabilities must contain one value per record ({n_records}); '
+                f'got {np.asarray(oof_probabilities).reshape(-1).size}.'
+            )
+        if ages is not None and np.asarray(ages).reshape(-1).size != n_records:
+            raise ValueError(
+                f'Ages must contain one value per record ({n_records}); '
+                f'got {np.asarray(ages).reshape(-1).size}.'
+            )
+        model_names = np.asarray(routed_model_oof.get('model_names', [])).reshape(-1)
+        if model_names.size != n_records:
+            raise ValueError(
+                f'Routed model names must contain one value per record ({n_records}); '
+                f'got {model_names.size}.'
+            )
+        for model_name, probabilities in routed_model_oof.get('probabilities', {}).items():
+            probability_count = np.asarray(probabilities).reshape(-1).size
+            if probability_count != n_records:
+                raise ValueError(
+                    f'Probabilities for route {model_name!r} must contain one value per '
+                    f'record ({n_records}); got {probability_count}.'
+                )
+
         fold_metric_summary = self._summarize_metrics(fold_metrics)
         self._print_metric_summary("  Mean fold metrics:", fold_metric_summary)
 
