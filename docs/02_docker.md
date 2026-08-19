@@ -15,31 +15,29 @@ Si tu dataset está en otra ubicación, actualiza la variable de ruta en el scri
 Entradas:
 
 - `data/training_set/` (dataset completo)
-- `data/training_smoke/` (dataset reducido para modo desarrollo (smoke))
 
 Salidas:
 
-- `model/` y `outputs/` (flujo completo)
-- `model_smoke/` y `outputs_smoke/` (flujo smoke)
+- `model/` (modelo entrenado)
+- `outputs_supplementary/` (comprobación suplementaria opcional)
 
 ## Orden recomendado de ejecución
 
 1. Construir imagen Docker (`build`)
-2. Preparar dataset smoke (`smoke`)
-3. Iterar en modo desarrollo con datasets completos (`train-dev`)
-4. Ejecutar validación completa (`train` / `run`)
-5. Limpiar artefactos cuando corresponda (`clean`)
+2. Iterar en modo desarrollo con datasets completos (`train-dev`)
+3. Entrenar el modelo (`train`)
+4. Limpiar artefactos cuando corresponda (`clean`)
 
 La guía paso a paso está en `docs/04_run_script.md`.
 
 ## Compatibilidad de scripts
 
 El flujo principal del equipo está documentado con `run.sh` (Git Bash).
-También existen equivalentes en PowerShell: `run.ps1` y `scripts/create_smoke.ps1`.
+También existe un equivalente en PowerShell: `run.ps1`.
 
 ## Resultado esperado
 
-Tras ejecutar la generación de predicciones (inferencia) completa, en `outputs/` se genera un `demographics.csv` con:
+Tras ejecutar la comprobación suplementaria, en `outputs_supplementary/` se genera un `demographics.csv` con:
 
 - Columnas originales
 - `Cognitive_Impairment`

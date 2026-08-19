@@ -7,14 +7,14 @@ Este documento registra las optimizaciones de tiempo de entrenamiento aplicadas 
 Mantener un registro claro de los cambios respecto a la base proporcionada por la organización para que el equipo pueda:
 
 - entender qué optimizaciones se probaron;
-- medir su efecto sobre el flujo smoke;
+- medir su efecto sobre las iteraciones rápidas;
 - identificar qué cambios merece la pena conservar;
 - revertir cambios concretos si la submission se comporta distinto en el entorno del Challenge.
 
 ## Línea Base
 
 - Fuente de la línea base: implementación de ejemplo proporcionada por la organización en `team_code.py`.
-- Tiempo observado de entrenamiento smoke con `./run.sh train-dev`: alrededor de 22 segundos.
+- Tiempo observado de entrenamiento rápido con `./run.sh train-dev`: alrededor de 22 segundos.
 - Comportamiento base: extracción secuencial de features, lecturas repetidas de CSV, recarga repetida de reglas de renombrado de canales y carga no utilizada de anotaciones humanas durante entrenamiento.
 
 ## Cambios Aplicados
@@ -33,8 +33,8 @@ Motivo:
 
 Efecto observado:
 
-- El tiempo de entrenamiento smoke pasó de unos 22.0 s a 21.891 s.
-- Conclusión: la limpieza es correcta a nivel lógico, pero su impacto en tiempo es despreciable en el dataset smoke.
+- El tiempo de entrenamiento rápido pasó de unos 22.0 s a 21.891 s.
+- Conclusión: la limpieza es correcta a nivel lógico, pero su impacto en tiempo es despreciable en la medición rápida.
 
 Riesgo:
 
@@ -53,8 +53,8 @@ Motivo:
 
 Efecto observado:
 
-- El tiempo smoke medido en la siguiente ejecución fue 22.040 s.
-- Conclusión: la optimización es correcta, pero no ataca un cuello de botella relevante en smoke.
+- El tiempo medido en la siguiente ejecución fue 22.040 s.
+- Conclusión: la optimización es correcta, pero no ataca un cuello de botella relevante en la medición rápida.
 
 Riesgo:
 
@@ -76,7 +76,7 @@ Motivo:
 
 Efecto observado:
 
-- El tiempo smoke bajó a 20.837 s.
+- El tiempo bajó a 20.837 s.
 - Conclusión: es una mejora real, aunque moderada.
 
 Riesgo:
@@ -103,7 +103,7 @@ Motivo:
 
 Efecto observado:
 
-- El tiempo smoke bajó a 9.578 s en la primera ejecución tras paralelizar.
+- El tiempo bajó a 9.578 s en la primera ejecución tras paralelizar.
 - Las ejecuciones de seguimiento midieron 9.762 s y 9.655 s.
 - Conclusión: esta es la optimización dominante.
 

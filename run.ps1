@@ -2,11 +2,7 @@ param(
     [Parameter(Mandatory=$true)]
     [ValidateSet(
         "build",
-        "smoke",
         "train",
-        "train-smoke",
-        "run-smoke",
-        "eval-smoke",
         "train-dev",
         "supplementary",
         "clean"
@@ -24,18 +20,14 @@ param(
 # modifica estas rutas.
 # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 $TRAIN_DATA_REL = "data/training_set"
-$SMOKE_DATA_REL = "data/training_smoke"
 $SUPPLEMENTARY_DATA_REL = "data/supplementary_set"
 
 $IMAGE_NAME = "cinc2026"
 
 $MODEL_FULL_REL = "model"
-$MODEL_SMOKE_REL = "model_smoke"
 $FEATURE_CACHE_REL = ".feature_cache"
 
-$OUT_SMOKE_REL = "outputs_smoke"
 $OUT_SUPPLEMENTARY_REL = "outputs_supplementary"
-$DEMOGRAPHICS_FILE = "demographics.csv"
 
 # ============================================
 # FUNCIONES AUXILIARES
@@ -66,27 +58,12 @@ function Get-DockerGpuArgs {
     return @()
 }
 
-function Invoke-Evaluation($DataPath, $OutputPath, $PrevalencePath, $Label) {
-    Write-Host "Evaluating $Label predictions..."
-    docker run --rm `
-        -v "${DataPath}:/challenge/eval_data:ro" `
-        -v "${OutputPath}:/challenge/eval_outputs:ro" `
-        -v "${PrevalencePath}:/challenge/prevalence_data:ro" `
-        $IMAGE_NAME `
-        python evaluate_model.py -d "/challenge/eval_data/$DEMOGRAPHICS_FILE" -o "/challenge/eval_outputs/$DEMOGRAPHICS_FILE" -p "/challenge/prevalence_data/$DEMOGRAPHICS_FILE"
-}
-
 # ============================================
 # COMANDOS
 # ============================================
 
 function Build-Image {
     docker build -t $IMAGE_NAME .
-}
-
-function Create-Smoke {
-    Write-Host "Creando dataset smoke..."
-    powershell -ExecutionPolicy Bypass -File scripts/create_smoke.ps1
 }
 
 function Train-Full {
@@ -105,56 +82,6 @@ function Train-Full {
         -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
         $IMAGE_NAME `
         python train_model.py -d training_data -m model -v
-}
-
-function Train-Smoke {
-
-    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
-    $MODEL_SMOKE = Join-Path (Get-AbsolutePath ".") $MODEL_SMOKE_REL
-    $FEATURE_CACHE = Join-Path (Get-AbsolutePath ".") $FEATURE_CACHE_REL
-
-    Ensure-Directory $MODEL_SMOKE
-    Ensure-Directory $FEATURE_CACHE
-
-    $GPU_ARGS = Get-DockerGpuArgs
-    docker run --rm $GPU_ARGS `
-        -v "${SMOKE_DATA}:/challenge/training_data:ro" `
-        -v "${MODEL_SMOKE}:/challenge/model" `
-        -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
-        $IMAGE_NAME `
-        python train_model.py -d training_data -m model -v
-}
-
-function Run-Smoke {
-
-    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
-    $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $MODEL_SMOKE = Get-AbsolutePath $MODEL_SMOKE_REL
-    $OUT_SMOKE = Join-Path (Get-AbsolutePath ".") $OUT_SMOKE_REL
-    $FEATURE_CACHE = Join-Path (Get-AbsolutePath ".") $FEATURE_CACHE_REL
-
-    Ensure-Directory $OUT_SMOKE
-    Ensure-Directory $FEATURE_CACHE
-
-    $GPU_ARGS = Get-DockerGpuArgs
-    docker run --rm $GPU_ARGS `
-        -v "${SMOKE_DATA}:/challenge/holdout_data:ro" `
-        -v "${MODEL_SMOKE}:/challenge/model:ro" `
-        -v "${OUT_SMOKE}:/challenge/holdout_outputs" `
-        -v "${FEATURE_CACHE}:/challenge/.feature_cache" `
-        $IMAGE_NAME `
-        python run_model.py -d holdout_data -m model -o holdout_outputs -v
-
-    Invoke-Evaluation $SMOKE_DATA $OUT_SMOKE $PREVALENCE_DATA "smoke"
-}
-
-function Eval-Smoke {
-
-    $SMOKE_DATA = Get-AbsolutePath $SMOKE_DATA_REL
-    $PREVALENCE_DATA = Get-AbsolutePath $TRAIN_DATA_REL
-    $OUT_SMOKE = Get-AbsolutePath $OUT_SMOKE_REL
-
-    Invoke-Evaluation $SMOKE_DATA $OUT_SMOKE $PREVALENCE_DATA "smoke"
 }
 
 # ======================
@@ -208,8 +135,6 @@ function Run-Supplementary {
 function Clean-All {
 
     Remove-Item -Recurse -Force $MODEL_FULL_REL -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $MODEL_SMOKE_REL -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $OUT_SMOKE_REL -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $OUT_SUPPLEMENTARY_REL -ErrorAction SilentlyContinue
 
     Write-Host "Modelos y outputs eliminados."
@@ -222,11 +147,7 @@ function Clean-All {
 switch ($Command) {
 
     "build"       { Build-Image }
-    "smoke"       { Create-Smoke }
     "train"       { Train-Full }
-    "train-smoke" { Train-Smoke }
-    "run-smoke"   { Run-Smoke }
-    "eval-smoke"  { Eval-Smoke }
     "train-dev"   { Train-Dev }
     "supplementary" { Run-Supplementary }
     "clean"       { Clean-All }

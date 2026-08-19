@@ -19,7 +19,7 @@ data/supplementary_set/
 
 ⚠️ Ejecutar los comandos desde PowerShell.
 
-ℹ️ Para contexto general y definición de artefactos, ver `docs/02_docker.md` y `docs/03_smoke_dataset.md`.
+ℹ️ Para contexto general y definición de artefactos, ver `docs/02_docker.md`.
 ---
 
 # Orden de ejecución recomendado
@@ -35,14 +35,6 @@ Desde la raíz del repositorio.
 ```
 
 Ejecutar la primera vez y cada vez que cambien `requirements.txt` o `Dockerfile`.
-
-### Crear dataset smoke (5 sujetos)
-
-```powershell
-.\run.ps1 smoke
-```
-
-Genera `data/training_smoke/`.
 
 ## 2) Entrenamiento completo
 
@@ -62,19 +54,11 @@ Usa `data/training_set/` y guarda el modelo en `model/`.
 
 Ejecuta la ruta oficial de inferencia de la imagen Docker sobre `data/supplementary_set/` y escribe predicciones en `outputs_supplementary/`. El set suplementario no es un conjunto de validación: sus predicciones no se evalúan ni se usan para selección de modelo.
 
-### Evaluar predicciones existentes del dataset smoke
-
-```powershell
-.\run.ps1 eval-smoke
-```
-
-Reutiliza `outputs_smoke/demographics.csv` y muestra AUROC, AUPRC, Accuracy y F-measure sin volver a ejecutar inferencia.
-
 ## 3) Limpieza de artefactos
 
 ```powershell
 .\run.ps1 clean
 ```
 
-Elimina `model/`, `model_smoke/`, `outputs/` y `outputs_smoke/`.
+Elimina `model/` y `outputs_supplementary/`.
 No elimina datasets.
