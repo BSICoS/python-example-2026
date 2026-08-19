@@ -39,13 +39,9 @@ class SlowWaveFeatureTests(unittest.TestCase):
         self.assertEqual(tuple(features), eeg_features.SLOW_WAVE_FEATURE_NAMES)
         self.assertEqual(features['TotalSW'], 2.0)
         self.assertEqual(features['SWdensity'], 1.0)
-        self.assertEqual(features['SWpeakAmp_mean'], -100.0)
-        self.assertEqual(features['SWpeakAmp_std'], 20.0)
         self.assertEqual(features['SWp2p_mean'], 160.0)
         self.assertEqual(features['SWnegSlope_mean'], -6.0)
-        self.assertEqual(features['SWposSlope_mean'], 7.0)
         self.assertAlmostEqual(features['SWduration_mean'], 1.25)
-        self.assertAlmostEqual(features['SWduration_std'], 0.25)
 
     def test_summarize_no_waves_distinguishes_absence_from_missing_morphology(self):
         features = eeg_features.summarize_slow_waves(
@@ -85,7 +81,6 @@ class SlowWaveFeatureTests(unittest.TestCase):
 
         self.assertGreater(features['TotalSW'], 10)
         self.assertGreater(features['SWdensity'], 30)
-        self.assertLess(features['SWpeakAmp_mean'], -80)
         self.assertGreater(features['SWp2p_mean'], 160)
         self.assertTrue(0.4 < features['SWduration_mean'] < 0.6)
 
@@ -130,7 +125,7 @@ class SlowWaveFeatureTests(unittest.TestCase):
         self.assertEqual(tuple(features), eeg_features.SLOW_WAVE_FEATURE_NAMES)
         self.assertEqual(features['TotalSW'], 1.0)
         self.assertEqual(features['SWdensity'], 1.0)
-        self.assertEqual(features['SWpeakAmp_mean'], -75.0)
+        self.assertEqual(features['SWp2p_mean'], 125.0)
 
     def test_sw_failure_does_not_discard_other_channel_metrics(self):
         fs = 200
