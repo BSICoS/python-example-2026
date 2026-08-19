@@ -12,6 +12,49 @@ from src.lib.swa.swa_getInfoDefaults import swa_getInfoDefaults
 
 
 class SlowWaveFeatureTests(unittest.TestCase):
+    @staticmethod
+    def _zc_info(fs=10, stages=None):
+        info = swa_getInfoDefaults({}, 'SW', method='envelope')
+        info['Recording'] = {'sRate': fs}
+        info['Parameters'].update({
+            'Ref_InspectionPoint': 'ZC', 'Ref_AmplitudeCriteria': 'absolute',
+            'Ref_AmplitudeAbsolute': 1.0, 'Ref_AmplitudeMax': 1000.0,
+            'Ref_SlopeMin': .9, 'Ref_WaveLength': [.1, 2.0],
+        })
+        if stages is not None:
+            info['Parameters']['Ref_UseStages'] = [1, 2]
+        return info
+
+    @staticmethod
+    def _fake_peaks(*_args, **_kwargs):
+        # The implementation discards its first peak, leaving one NREM peak.
+        return np.array([0, 1]), np.array([0, 1])
+
+    def test_stage_gate_excludes_wake_from_slope_threshold_only_when_active(self):
+        signal = np.array([1., 1., -1., -5., -1., 1., 2., 102., 202.])
+        stages = np.array([2, 2, 2, 2, 2, 2, 2, 5, 5])
+        expected_nrem = np.percentile(np.diff(signal, prepend=signal[0])[(np.diff(signal, prepend=signal[0]) > 0) & np.isin(stages, [1, 2])], 90)
+        expected_all = np.percentile(np.diff(signal, prepend=signal[0])[np.diff(signal, prepend=signal[0]) > 0], 90)
+        with patch('src.lib.swa.swa_get_peaks.swa_get_peaks', self._fake_peaks):
+            _, gated_info, _ = swa_FindSWRef({'SWRef': signal[np.newaxis, :], 'sleep_stages': stages}, self._zc_info(stages=stages))
+            _, current_info, _ = swa_FindSWRef({'SWRef': signal[np.newaxis, :]}, self._zc_info())
+        self.assertAlmostEqual(gated_info['Recording']['Slope_Threshold'][0], expected_nrem)
+        self.assertAlmostEqual(current_info['Recording']['Slope_Threshold'][0], expected_all)
+        self.assertNotEqual(expected_nrem, expected_all)
+
+    def test_zc_stage_gate_requires_trough_in_nrem(self):
+        signal = np.array([1., 1., -1., -5., -1., 1., 1.])
+        accepted = np.full(signal.size, 2)
+        rejected = accepted.copy(); rejected[3] = 5  # DZC is sample 1, trough is sample 3.
+        with patch('src.lib.swa.swa_get_peaks.swa_get_peaks', self._fake_peaks):
+            _, _, waves_rejected = swa_FindSWRef(
+                {'SWRef': signal[np.newaxis, :], 'sleep_stages': rejected}, self._zc_info(stages=rejected))
+            _, _, waves_accepted = swa_FindSWRef(
+                {'SWRef': signal[np.newaxis, :], 'sleep_stages': accepted}, self._zc_info(stages=accepted))
+        self.assertEqual(waves_rejected, [])
+        self.assertEqual(len(waves_accepted), 1)
+        self.assertEqual(waves_accepted[0]['Ref_PeakInd'], 3)
+
     def test_summarize_slow_waves_returns_fixed_numeric_features(self):
         waves = [
             {

@@ -135,7 +135,11 @@ def swa_FindSWRef(Data, Info, SW=None):
             UZC = np.where(np.diff(signData) > 0)[0] + 1 # +1 para ser la muestra tras el cruce
             
             # Umbral de pendiente (percentil)
-            pos_slopes = slopeData[slopeData > 0]
+            if p.get('Ref_UseStages') is not None and 'sleep_stages' in Data:
+                stage_mask = np.isin(Data['sleep_stages'], p['Ref_UseStages'])
+                pos_slopes = slopeData[(slopeData > 0) & stage_mask]
+            else:
+                pos_slopes = slopeData[slopeData > 0]
             slopeThresh = np.percentile(pos_slopes, p['Ref_SlopeMin'] * 100) if len(pos_slopes) > 0 else 0
             Info['Recording']['Slope_Threshold'][ref_wave] = slopeThresh
             
@@ -172,6 +176,9 @@ def swa_FindSWRef(Data, Info, SW=None):
                 # Amplitud Negativa
                 NegPeakAmp = np.min(segment)
                 NegPeakId = start + np.argmin(segment)
+                if (p.get('Ref_UseStages') is not None and 'sleep_stages' in Data
+                        and Data['sleep_stages'][NegPeakId] not in p['Ref_UseStages']):
+                    continue
                 
                 if NegPeakAmp > -p['Ref_AmplitudeAbsolute'][ref_wave] or NegPeakAmp < -p.get('Ref_AmplitudeMax', 250):
                     continue
