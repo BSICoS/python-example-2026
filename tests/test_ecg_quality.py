@@ -163,7 +163,7 @@ def test_combined_extraction_reuses_respiration_selection():
         pipeline_features,
         "processEEG",
         return_value=np.zeros(
-            len(pipeline_features.EEG_FEATURE_NAMES),
+            len(pipeline_features.EEG_SEGMENT_FEATURE_NAMES),
             dtype=np.float32,
         ),
     ), patch.object(

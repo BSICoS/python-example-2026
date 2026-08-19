@@ -17,7 +17,7 @@ from src.resp_processing import (
     RESP_FEATURE_LENGTH,
     RESP_FEATURE_NAMES,
     _get_resp_alias_groups,
-    process_respiration_segment,
+    select_best_respiration_signal,
 )
 
 from .config import (
@@ -360,27 +360,17 @@ def _extract_respiration_and_ecg_features(
     csv_path,
 ):
     segments = _iter_signal_segments(physiological_data, physiological_fs)
-    respiration_vectors = []
     ecg_vectors = []
 
     for segment_data, segment_fs in segments:
-        respiration_result = None
         try:
-            respiration_result = process_respiration_segment(
+            selected_respiration = select_best_respiration_signal(
                 segment_data,
                 segment_fs,
                 csv_path,
             )
-            if not np.all(np.isnan(respiration_result.features)):
-                respiration_vectors.append(respiration_result.features)
         except Exception:
-            pass
-
-        ecg_kwargs = (
-            {"selected_respiration": respiration_result.selected}
-            if respiration_result is not None
-            else {}
-        )
+            selected_respiration = None
         try:
             ecg_vector = _extract_optional_features(
                 processECG,
@@ -388,7 +378,7 @@ def _extract_respiration_and_ecg_features(
                 segment_data,
                 segment_fs,
                 csv_path=csv_path,
-                **ecg_kwargs,
+                selected_respiration=selected_respiration,
             )
         except Exception:
             continue
@@ -396,10 +386,7 @@ def _extract_respiration_and_ecg_features(
             ecg_vectors.append(ecg_vector)
 
     return (
-        _aggregate_segment_feature_vectors(
-            respiration_vectors,
-            RESP_FEATURE_NAMES,
-        ),
+        np.full(RESP_FEATURE_LENGTH * len(SEGMENT_AGGREGATION_NAMES), np.nan, dtype=np.float32),
         _aggregate_segment_feature_vectors(
             ecg_vectors,
             ECG_FEATURE_NAMES,

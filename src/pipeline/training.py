@@ -28,7 +28,7 @@ from .preprocessing import build_preprocessor, get_processed_feature_names, rema
 
 
 DEFAULT_ENSEMBLE_THRESHOLD = 0.5
-ENSEMBLE_MODALITIES = ('resp', 'eeg', 'ecg')
+ENSEMBLE_MODALITIES = ('eeg', 'ecg')
 
 # Context needed to evaluate the age-conditioned metric on scaled model inputs.
 AGE_FEATURE_INDEX = 0
@@ -264,21 +264,11 @@ def _get_combined_model_indices(feature_indices):
                 combined.update(np.asarray(feature_indices[key], dtype=np.int32).tolist())
         return np.array(sorted(list(combined)), dtype=np.int32)
 
-    combined_map = {
-        # Single signal + Demographics (3 models)
+    return {
         'ecg': _combine(['ecg']),
         'eeg': _combine(['eeg']),
-        'resp': _combine(['resp']),
-        
-        # Dual ensembles + Demographics (3 ensemble models)
         'ecg_eeg': _combine(['ecg', 'eeg']),
-        'ecg_resp': _combine(['ecg', 'resp']),
-        'eeg_resp': _combine(['eeg', 'resp']),
-        
-        # All signals + Demographics (1 complete ensemble model)
-        'all': _combine(['ecg', 'eeg', 'resp'])
     }
-    return combined_map
 
 
 def _get_model_modalities(model_name):
@@ -400,22 +390,19 @@ def _select_ensemble_model_name(raw_feature_vector, models, modality_presence_in
         and _has_modality_signal(raw_feature_vector, modality_presence_indices[modality])
     }
 
-    # Prefer ECG+EEG whenever possible; RESP may still support ECG feature extraction,
-    # but its standalone feature block is not part of the preferred XGBoost route.
     candidate_models = (
         (frozenset(('ecg', 'eeg')), 'ecg_eeg'),
         (frozenset(('eeg',)), 'eeg'),
         (frozenset(('ecg',)), 'ecg'),
-        (frozenset(('ecg', 'eeg', 'resp')), 'all'),
-        (frozenset(('ecg', 'resp')), 'ecg_resp'),
-        (frozenset(('eeg', 'resp')), 'eeg_resp'),
-        (frozenset(('resp',)), 'resp'),
     )
     for modalities, model_name in candidate_models:
         if modalities.issubset(active_modalities) and model_name in models:
             return model_name
 
-    return 'all' if 'all' in models else next(iter(models))
+    for model_name in ('ecg_eeg', 'eeg', 'ecg'):
+        if model_name in models:
+            return model_name
+    raise ValueError('No ECG/EEG ensemble model is available for inference.')
 
 
 def select_ensemble_model_names(model_bundle, feature_matrix):

@@ -197,12 +197,29 @@ def _weighted_quantile(values, weights, quantile):
     return float(values[np.searchsorted(np.cumsum(weights), quantile * np.sum(weights), side='left')])
 
 
+def _build_slow_wave_segment_context(annotation, record_duration_seconds):
+    """Precompute CAISR data shared by all 200 Hz EEG channel windows."""
+    from src.pipeline.config import SEGMENT_DURATION_SECONDS, SEGMENT_STRIDE_SECONDS
+    context = {}
+    for start in np.arange(0.0, record_duration_seconds - SEGMENT_DURATION_SECONDS + 1e-9,
+                           SEGMENT_STRIDE_SECONDS):
+        context[float(start)] = (
+            expand_stages_to_samples(annotation, start, int(SEGMENT_DURATION_SECONDS * 200), 200),
+            weighted_nrem_minutes(annotation, start, start + SEGMENT_DURATION_SECONDS),
+        )
+    return context
+
+
 def extract_record_slow_wave_features(physiological_data, physiological_fs, csv_path, annotation):
     """Extract NREM-aware record-level slow-wave features for four EEG channels."""
     from src.pipeline.config import SEGMENT_DURATION_SECONDS, SEGMENT_STRIDE_SECONDS
     if not annotation.get('available'):
         return np.full(len(EEG_SLOW_WAVE_FEATURE_NAMES), np.nan, dtype=np.float32)
     aliases = _get_eeg_aliases(csv_path)
+    record_duration = max((len(signal) / float(physiological_fs[label])
+                           for label, signal in physiological_data.items()
+                           if label in physiological_fs and physiological_fs[label] > 0), default=0.0)
+    segment_context = _build_slow_wave_segment_context(annotation, record_duration)
     result = []
     for channel_name in EEG_CHANNEL_SPECS:
         signal, fs = _get_channel_signal(channel_name, physiological_data, physiological_fs, aliases)
@@ -218,13 +235,14 @@ def extract_record_slow_wave_features(physiological_data, physiological_fs, csv_
             if prepared is None: continue
             detector_signal, detector_fs = prepared
             try:
+                sleep_stages, weighted_minutes = segment_context[float(start)]
                 detection = eeg_features.detect_slow_waves(
                     detector_signal, detector_fs,
-                    sleep_stages=expand_stages_to_samples(annotation, start, len(detector_signal), detector_fs),
+                    sleep_stages=sleep_stages,
                     allowed_stages=(1, 2))
             except Exception:
                 continue
-            exposure += weighted_nrem_minutes(annotation, start, end)
+            exposure += weighted_minutes
             for event in detection['events']:
                 trough = start + float(np.asarray(event['Ref_PeakInd']).squeeze()) / detector_fs
                 weight = p_nrem_at_time(annotation, trough)

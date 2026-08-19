@@ -234,7 +234,7 @@ class PreprocessingLeakageTests(unittest.TestCase):
         self.assertEqual(models['ecg']['n_train'], 4)
         self.assertEqual(models['eeg']['n_train'], 3)
         self.assertEqual(models['ecg_eeg']['n_train'], 3)
-        self.assertEqual(models['all']['n_train'], 2)
+        self.assertEqual(tuple(models), ('ecg', 'eeg', 'ecg_eeg'))
         self.assertEqual(len(fitted_labels), len(models))
         self.assertEqual(fitted_params, [final_params] * len(models))
 
