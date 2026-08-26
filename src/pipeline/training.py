@@ -1019,6 +1019,7 @@
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, accuracy_score, recall_score, f1_score, confusion_matrix
 import numpy as np
@@ -1424,6 +1425,43 @@ def _evaluate_and_display_models(models, processed_features, labels, combined_in
     return metrics_summary
 
 
+def _run_diagnostic_loho(
+    production_cv_config,
+    features,
+    labels,
+    feature_indices,
+    modality_presence_indices,
+    categorical_indices,
+    site_groups,
+    raw_age_feature_index,
+):
+    """Run grouped nested CV for reporting without affecting model fitting."""
+    diagnostic_cv_config = replace(
+        production_cv_config,
+        use_site_grouped_cv=True,
+    )
+    diagnostic_cv_runner = EnsembleCrossValidator(
+        config=diagnostic_cv_config,
+        param_dist=PARAM_DIST,
+        default_threshold=DEFAULT_ENSEMBLE_THRESHOLD,
+        build_preprocessor=build_preprocessor,
+        build_search_model=_build_search_model,
+        fit_ensemble=_fit_ensemble,
+        predict_probabilities=predict_ensemble_probabilities,
+        search_age_feature_index=raw_age_feature_index,
+        search_age_feature_scale=1.0,
+        search_age_feature_offset=0.0,
+    )
+    return diagnostic_cv_runner.run(
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices=modality_presence_indices,
+        categorical_indices=categorical_indices,
+        site_groups=site_groups,
+    )
+
+
 def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None):
     patient_data_file = os.path.join(data_folder, DEMOGRAPHICS_FILE)
     patient_metadata_list = find_patients(patient_data_file)
@@ -1515,6 +1553,9 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
     )
 
     # --- Step 1: Leakage-free nested CV for calibration and hyperparameter consensus ---
+    print("\n" + "=" * 60)
+    print("RANDOM STRATIFIED NESTED CV")
+    print("=" * 60)
     print("Running nested CV with fold-specific preprocessing...")
     cv_result = cv_runner.run(
         features,
@@ -1585,6 +1626,22 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         labels=labels,
         combined_indices=combined_indices,
         threshold=threshold,
+    )
+
+    # This second CV run is diagnostic only. The deployable preprocessing,
+    # models, threshold, and consensus hyperparameters have already been fixed.
+    print("\n" + "=" * 60)
+    print("LEAVE-ONE-HOSPITAL-OUT NESTED CV")
+    print("=" * 60)
+    diagnostic_loho_result = _run_diagnostic_loho(
+        cv_config,
+        features,
+        labels,
+        feature_indices,
+        modality_presence_indices,
+        categorical_indices if categorical_indices else None,
+        site_groups,
+        raw_age_feature_index,
     )
 
     # Exportar métricas e información de diagnóstico a los CSV
