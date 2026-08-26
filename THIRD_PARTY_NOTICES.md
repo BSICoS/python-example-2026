@@ -10,4 +10,4 @@ Original license: GNU General Public License version 2.0
 
 The Python port is located primarily in `src/lib/swa`. These files have been modified and translated into Python for integration into the EEG feature-extraction pipeline.
 
-Python port and subsequent modifications © 2026 [appropriate copyright holders].
+Python port and subsequent modifications © 2026 BSICoS.
