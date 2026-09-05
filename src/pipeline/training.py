@@ -1193,7 +1193,33 @@ def export_selected_features_csv(output_path, feature_names, selected_raw_featur
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     pd.DataFrame(selected_rows).to_csv(output_path, index=False)
-    
+
+# Vuelca las predicciones out-of-fold de cada estrategia de CV (con edad/hospital reales) para poder
+# analizar el rendimiento del modelo por franjas de edad y hospital en un script aparte, sin re-entrenar.
+def export_cv_oof_predictions(output_path, metadata_rows, ages, labels, cv_results_by_strategy):
+    rows = []
+    for cv_strategy, cv_result in cv_results_by_strategy.items():
+        if cv_result is None or cv_result.metrics.get('skipped'):
+            continue
+        oof_probabilities = cv_result.oof_probabilities
+        oof_fold_index = cv_result.oof_fold_index
+        for row_index, metadata_row in enumerate(metadata_rows):
+            rows.append({
+                'patient_id': metadata_row['patient_id'],
+                'site_id': metadata_row['site_id'],
+                'session_id': metadata_row['session_id'],
+                'age': float(ages[row_index]),
+                'label': int(labels[row_index]),
+                'cv_strategy': cv_strategy,
+                'fold': int(oof_fold_index[row_index]),
+                'oof_probability': float(oof_probabilities[row_index]),
+                'calibrated_threshold': float(cv_result.threshold),
+            })
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    pd.DataFrame(rows).to_csv(output_path, index=False)
+    return output_path
+
 def export_feature_views(export_root, prefix, metadata_rows, feature_matrix, feature_names, preprocessor=None, labels=None):
     raw_feature_matrix, processed_feature_matrix = prepare_feature_matrix(
         feature_matrix,
@@ -1662,7 +1688,21 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         selected_raw_feature_indices,
         modality_presence_indices,
     )
-    feature_exports['selected'] = selected_features_csv      
+    feature_exports['selected'] = selected_features_csv
+
+    cv_oof_predictions_csv = os.path.join(export_root, 'training_cv_oof_predictions.csv')
+    export_cv_oof_predictions(
+        cv_oof_predictions_csv,
+        metadata_rows,
+        ages=features[:, raw_age_feature_index],
+        labels=labels,
+        cv_results_by_strategy={
+            'random_stratified': cv_result,
+            'grouped_by_site': diagnostic_loho_result,
+        },
+    )
+    feature_exports['cv_oof_predictions'] = cv_oof_predictions_csv
+
     return {
         'type': 'multimodal_xgb_ensemble',
         'threshold': threshold,
@@ -1685,5 +1725,6 @@ def train_multimodal_ensemble(data_folder, verbose, csv_path, export_folder=None
         'preprocessor': preprocessor,
         'feature_exports': feature_exports,
         'cv_metrics': cv_metrics,
+        'diagnostic_loho_cv_metrics': diagnostic_loho_result.metrics,
         'training_metrics': training_metrics,
     }

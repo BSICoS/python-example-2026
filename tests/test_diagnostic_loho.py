@@ -61,12 +61,14 @@ class DiagnosticLohoTests(unittest.TestCase):
                 patch.object(training, '_fit_ensemble', return_value={}) as fit_ensemble, \
                 patch.object(training, '_evaluate_and_display_models', return_value={}), \
                 patch.object(training, 'export_feature_views', return_value={}), \
-                patch.object(training, 'export_selected_features_csv'):
+                patch.object(training, 'export_selected_features_csv'), \
+                patch.object(training, 'export_cv_oof_predictions'):
             bundle = training.train_multimodal_ensemble('data', False, 'records.csv', 'exports')
 
         self.assertEqual(bundle['threshold'], random_result.threshold)
         self.assertEqual(bundle['cv_metrics'], random_result.metrics)
         self.assertNotIn('diagnostic_loho_result', bundle)
+        self.assertEqual(bundle['diagnostic_loho_cv_metrics'], loho_result.metrics)
         self.assertEqual(
             fit_ensemble.call_args.kwargs['consensus_params'],
             random_result.consensus_params,
@@ -131,7 +133,9 @@ class DiagnosticLohoTests(unittest.TestCase):
         self.assertLess(threshold_source, final_fit)
         self.assertLess(consensus_source, final_fit)
         self.assertLess(final_fit, diagnostic_run)
-        self.assertEqual(source.count('diagnostic_loho_result'), 1)
+        # diagnostic_loho_result is now also read for the OOF-predictions export and the
+        # reported (non-deployable) cv metrics, in addition to its initial assignment.
+        self.assertEqual(source.count('diagnostic_loho_result'), 3)
         self.assertIn("'threshold': threshold", source)
         self.assertIn("'cv_metrics': cv_metrics", source)
         self.assertIn('consensus_params=consensus', source)

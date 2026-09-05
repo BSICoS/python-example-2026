@@ -30,6 +30,9 @@ class CrossValidationResult:
     threshold: float
     consensus_params: Optional[dict[str, Any]]
     metrics: dict[str, Any]
+    # Per-record out-of-fold outputs, aligned with the original features/labels order.
+    oof_probabilities: Optional[np.ndarray] = None
+    oof_fold_index: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -149,7 +152,7 @@ class EnsembleCrossValidator:
             site_groups=site_groups,
             label_prefix='held-out hospital',
         )
-        fold_metrics, oof_probabilities = self._evaluate_with_fold_params(
+        fold_metrics, oof_probabilities, oof_fold_index = self._evaluate_with_fold_params(
             split_plan,
             features,
             labels,
@@ -165,6 +168,7 @@ class EnsembleCrossValidator:
             consensus_params=consensus,
             labels=labels,
             oof_probabilities=oof_probabilities,
+            oof_fold_index=oof_fold_index,
             ages=self._get_ages_in_years(features),
             best_params_per_fold=selected_params_per_fold,
             fold_metrics=fold_metrics,
@@ -214,7 +218,7 @@ class EnsembleCrossValidator:
             site_groups=None,
             label_prefix='random split',
         )
-        fold_metrics, oof_probabilities = self._evaluate_with_fold_params(
+        fold_metrics, oof_probabilities, oof_fold_index = self._evaluate_with_fold_params(
             split_plan,
             features,
             labels,
@@ -229,6 +233,7 @@ class EnsembleCrossValidator:
             consensus_params=consensus,
             labels=labels,
             oof_probabilities=oof_probabilities,
+            oof_fold_index=oof_fold_index,
             ages=self._get_ages_in_years(features),
             best_params_per_fold=selected_params_per_fold,
             fold_metrics=fold_metrics,
@@ -313,6 +318,7 @@ class EnsembleCrossValidator:
             raise ValueError(f'Missing selected hyperparameters for folds: {missing_folds}')
 
         oof_probabilities = np.zeros(len(labels), dtype=np.float32)
+        oof_fold_index = np.full(len(labels), -1, dtype=np.int32)
         fold_metrics = []
 
         for split in split_plan:
@@ -352,6 +358,7 @@ class EnsembleCrossValidator:
 
             fold_probabilities = self.predict_probabilities(fold_bundle, X_val)
             oof_probabilities[split.validation_idx] = fold_probabilities
+            oof_fold_index[split.validation_idx] = int(split.fold_index)
 
             fold_metric_row = self._compute_evaluation_metrics(
                 y_val,
@@ -370,9 +377,9 @@ class EnsembleCrossValidator:
             fold_metrics.append(fold_metric_row)
             self._print_metrics(f"    Fold {split.fold_index} metrics:", fold_metric_row)
 
-        return fold_metrics, oof_probabilities
+        return fold_metrics, oof_probabilities, oof_fold_index
     
-    def _finalize_result(self, consensus_params, labels, ages, oof_probabilities, best_params_per_fold, fold_metrics, metadata):
+    def _finalize_result(self, consensus_params, labels, ages, oof_probabilities, oof_fold_index, best_params_per_fold, fold_metrics, metadata):
         consensus = dict(consensus_params or {})
 
         fold_metric_summary = self._summarize_metrics(fold_metrics)
@@ -411,6 +418,8 @@ class EnsembleCrossValidator:
             threshold=threshold,
             consensus_params=consensus,
             metrics=metrics,
+            oof_probabilities=oof_probabilities,
+            oof_fold_index=oof_fold_index,
         )
 
     def _search_hyperparams(self, X_train, y_train, site_groups=None, categorical_indices=None):
